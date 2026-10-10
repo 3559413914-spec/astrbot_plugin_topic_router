@@ -11,6 +11,6 @@ help: |-
 
   配置里 mode 默认 mark（只记录、不改上下文），
   判定准确后再改成 auto（自动开新对话，旧对话完整留档）。
-version: v0.4.0
+version: v0.4.1
 author: dsh
 repo: https://github.com/3559413914-spec/astrbot_plugin_topic_router
