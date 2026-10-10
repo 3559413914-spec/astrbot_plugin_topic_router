@@ -138,6 +138,24 @@ MODE_HINT = "hint"
 MODE_AUTO = "auto"
 
 
+def _looks_like_event(candidate: Any) -> bool:
+    """判断一个参数是不是消息事件。
+
+    写成模块级函数而不是方法：实机上出现过 self 未正确绑定（self 就是事件对象）
+    的情况，那时 self._xxx 会直接抛 AttributeError。这个判断必须不依赖 self。
+
+    不靠 isinstance 硬绑类名：各平台的 Event 子类很多，测试里也用假对象，只要求
+    具备事件该有的最小特征。
+
+    Args:
+        candidate: 待判断的参数。
+
+    Returns:
+        True 表示看起来像消息事件。
+    """
+    return hasattr(candidate, "unified_msg_origin") and hasattr(candidate, "message_str")
+
+
 class TopicRouterPlugin(Star):
     """话题路由器插件本体。"""
 
@@ -421,56 +439,63 @@ class TopicRouterPlugin(Star):
         yield  # pragma: no cover - 让它是异步生成器，框架两种形态都接受
 
     @filter.on_llm_request()
-    async def hook_llm_request_v015(self, *args: Any, **kwargs: Any) -> None:
+    async def hook_llm_request_v016(self, *args: Any, **kwargs: Any) -> None:
         """可选增强入口：能拿到 `ProviderRequest` 时执行 `hint` / `auto` 的请求改写。
 
-        **方法名为什么带版本号（重要）**：AstrBot 的 `get_handler_or_create`
-        （4.28.1 `core/star/register/star_handler.py:38`）用
+        **这个方法的写法是被实机逼出来的，改之前请先读完：**
 
-            handler_full_name = f"{模块}_{函数名}"
-
-        作为注册表键，键里**不含插件版本**；命中已有条目时它直接 `return md`，
-        复用旧元数据。也就是说：只要方法还叫 `on_llm_request`，卸载重装后注册表里
-        命中的仍是**第一次安装时**那条记录，指向旧版函数对象——新代码永远不会被
-        调用（实机表现：函数入口的日志一次都不出现，却报旧签名的 TypeError）。
-        改成一个从未注册过的名字，就能拿到全新条目、绑定到本类当前的方法。
+        1. 方法名带版本号（`hook_llm_request_v016`）：AstrBot 的
+           `get_handler_or_create`（4.28.1 `core/star/register/star_handler.py:38`）用
+           `f"{模块}_{函数名}"` 当注册表键，键里**不含插件版本**，命中已有条目就直接
+           `return md` 复用旧元数据。只要方法还叫 `on_llm_request`，卸载重装后命中的
+           就是第一次安装留下的旧函数对象（实机现象：函数入口日志一次不出现，却报
+           旧签名的 TypeError）。换个从未用过的名字才能拿到全新条目。
+        2. **不依赖 `self` 绑定、也不依赖参数名**：实机日志显示，这个钩子被调用时
+           第一个位置参数是 `WebChatMessageEvent`——也就是说 `self` 被绑成了事件
+           对象（`AttributeError: 'WebChatMessageEvent' object has no attribute ...`）。
+           所以这里用 `*args/**kwargs` 接住一切，再从参数里自己认出"事件"和"请求"，
+           两个对象都靠 `isinstance` 判断，绝不假设谁在哪个位置。
 
         Args:
-            event: 消息事件。
-            *args: 派发方可能塞进来的 `ProviderRequest` 等额外参数。
+            *args: 派发方给的一切位置参数（可能含事件对象与 `ProviderRequest`）。
             **kwargs: 同上，按关键字传的情况。
         """
-        event = args[0] if args else kwargs.get("event")
-        if event is None:
-            return
-        rest = args[1:]
-
+        event: AstrMessageEvent | None = None
         req: ProviderRequest | None = None
-        for candidate in rest:
+        for candidate in args:
             if isinstance(candidate, ProviderRequest):
-                req = candidate
-                break
-        if req is None:
-            for key in ("req", "request", "provider_request"):
-                candidate = kwargs.get(key)
-                if isinstance(candidate, ProviderRequest):
-                    req = candidate
-                    break
-        if req is None:
-            req = self._request_from_event(event)
+                req = req if req is not None else candidate
+            elif event is None and _looks_like_event(candidate):
+                event = candidate
+        for key in ("event", "req", "request", "provider_request"):
+            candidate = kwargs.get(key)
+            if isinstance(candidate, ProviderRequest):
+                req = req if req is not None else candidate
+            elif event is None and _looks_like_event(candidate):
+                event = candidate
 
         try:
             logger.info(
-                f"[{PLUGIN_NAME}] hook_llm_request_v015 被调用 | {PLUGIN_VERSION} "
-                f"| has_request={req is not None} "
-                f"| args={[type(a).__name__ for a in rest]} | kwargs={sorted(kwargs)}"
+                f"[{PLUGIN_NAME}] hook_llm_request_v016 被调用 | {PLUGIN_VERSION} "
+                f"| self={type(self).__name__} "
+                f"| has_event={event is not None} | has_request={req is not None} "
+                f"| args={[type(a).__name__ for a in args]} | kwargs={sorted(kwargs)}"
             )
         except Exception:  # noqa: BLE001 - 诊断日志绝不能影响主流程
             pass
 
-        if req is None:
+        if event is None or req is None:
             return
-        await self._apply_request_actions(event, req)
+        # 总兜底：某些派发方式下 self 可能不是本插件实例，此时任何 self.xxx 都会炸。
+        # 这个钩子只负责 hint / auto 的请求改写，属于可选增强——出问题就降级，
+        # 绝不把 traceback 刷进日志（判定主路径是消息事件，不受影响）。
+        try:
+            await self._apply_request_actions(event, req)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                f"[{PLUGIN_NAME}] 请求改写被跳过（self={type(self).__name__}）："
+                f"{type(exc).__name__}: {exc}"
+            )
 
     # ------------------------------------------------------------------ 判定核心
 

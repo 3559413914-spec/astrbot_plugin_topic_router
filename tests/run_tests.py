@@ -340,7 +340,7 @@ async def run_detect(plugin, event, req=None):
     async for _ in plugin.on_message(event):
         pass
     if req is not None:
-        await plugin.hook_llm_request_v015(event, req)
+        await plugin.hook_llm_request_v016(event, req)
 
 
 async def test_metadata(module, tmp_root: Path) -> None:
@@ -645,7 +645,7 @@ async def test_request_hook_alone(module) -> None:
 
     req = ProviderRequest(prompt=event.message_str)
     # 只走钩子：先挂起、再执行，等价于实机上"消息事件没触发、只有钩子"的情况
-    await plugin.hook_llm_request_v015(event, req)
+    await plugin.hook_llm_request_v016(event, req)
     # 钩子本身不做判定（判定属于消息事件），所以这里不应该有注入
     check("钩子单独调用不会凭空判定", len(req.extra_user_content_parts) == 0)
 
@@ -654,7 +654,7 @@ async def test_request_hook_alone(module) -> None:
         pass
     check("消息事件完成了判定", plugin.store.get(umo).turns == 1)
     req2 = ProviderRequest(prompt=event.message_str)
-    await plugin.hook_llm_request_v015(event, req2)
+    await plugin.hook_llm_request_v016(event, req2)
     check("挂起的 hint 动作已执行", len(req2.extra_user_content_parts) == 1)
 
     # 同一条消息再走一遍消息事件，不应该被判定两次
@@ -858,7 +858,7 @@ async def test_entry_points(module) -> None:
         str([p.name for p in seen.parameters.values()]),
     )
 
-    hook = inspect.signature(module.TopicRouterPlugin.hook_llm_request_v015)
+    hook = inspect.signature(module.TopicRouterPlugin.hook_llm_request_v016)
     params = list(hook.parameters.values())
     required = [
         p.name
@@ -880,7 +880,7 @@ async def test_entry_points(module) -> None:
     )
     # 这条是给未来改代码的人（包括我自己）的警告：AstrBot 按"模块+函数名"复用
     # handler 元数据，方法名一旦叫回 on_llm_request，就会命中旧条目、新代码永不生效。
-    hook_name = module.TopicRouterPlugin.hook_llm_request_v015.__name__
+    hook_name = module.TopicRouterPlugin.hook_llm_request_v016.__name__
     check("请求钩子的方法名不是 on_llm_request", hook_name != "on_llm_request", hook_name)
     check(
         "请求钩子的方法名带版本号",
@@ -894,7 +894,7 @@ async def test_entry_points(module) -> None:
     fresh_data_root("entries-bare")
     context = FakeContext()
     plugin = make_plugin(module, context, {"mode": "mark"})
-    await plugin.hook_llm_request_v015(FakeEvent("你好", umo))
+    await plugin.hook_llm_request_v016(FakeEvent("你好", umo))
     check("钩子只传 event 不抛异常", True)
 
     # 位置参数 / 关键字参数里的请求都能认出来
@@ -905,7 +905,7 @@ async def test_entry_points(module) -> None:
     real_req = ProviderRequest(prompt=ev_pos.message_str)
     async for _ in plugin_pos.on_message(ev_pos):
         pass
-    await plugin_pos.hook_llm_request_v015(ev_pos, real_req)
+    await plugin_pos.hook_llm_request_v016(ev_pos, real_req)
     check(
         "位置参数里的请求被认出来",
         len(real_req.extra_user_content_parts) == 1,
@@ -919,7 +919,7 @@ async def test_entry_points(module) -> None:
     kw_req = ProviderRequest(prompt=ev_kw.message_str)
     async for _ in plugin_kw.on_message(ev_kw):
         pass
-    await plugin_kw.hook_llm_request_v015(ev_kw, req=kw_req)
+    await plugin_kw.hook_llm_request_v016(ev_kw, req=kw_req)
     check(
         "关键字参数里的请求被认出来",
         len(kw_req.extra_user_content_parts) == 1,
@@ -927,20 +927,38 @@ async def test_entry_points(module) -> None:
     )
 
     # 能从事件 extra 里找回 ProviderRequest
-    fresh_data_root("entries-extra")
-    ctx_extra = FakeContext()
-    plugin_extra = make_plugin(module, ctx_extra, {"mode": "hint"})
-    ev_extra = FakeEvent("帮我写个爬虫抓豆瓣", umo)
-    extra_req = ProviderRequest(prompt=ev_extra.message_str)
-    ev_extra.set_extra("provider_request", extra_req)
-    async for _ in plugin_extra.on_message(ev_extra):
+    # 实机现象：某些派发方式下 self 被绑成了事件对象。此时钩子既不能炸，也不能误动作。
+    fresh_data_root("entries-unbound")
+    ctx_unbound = FakeContext()
+    plugin_unbound = make_plugin(module, ctx_unbound, {"mode": "hint"})
+    ev_unbound = FakeEvent("帮我写个爬虫抓豆瓣", umo)
+    req_unbound = ProviderRequest(prompt=ev_unbound.message_str)
+    async for _ in plugin_unbound.on_message(ev_unbound):
         pass
-    await plugin_extra.hook_llm_request_v015(ev_extra)
+    # 直接按"未绑定函数"的方式调用：第一个位置参数会落到 self 上
+    try:
+        await type(plugin_unbound).hook_llm_request_v016(ev_unbound, req_unbound)
+        unbound_ok = True
+    except Exception as exc:  # noqa: BLE001 - 就是要看它会不会炸
+        unbound_ok = False
+        print(f"       [debug] 未绑定调用抛了: {type(exc).__name__}: {exc}")
+    check("self 被绑成事件时钩子不抛异常", unbound_ok)
     check(
-        "能从事件 extra 取回请求并注入提示",
-        len(extra_req.extra_user_content_parts) == 1,
-        str(extra_req.extra_user_content_parts),
+        "self 异常时不会误改请求",
+        len(req_unbound.extra_user_content_parts) == 0,
+        str(req_unbound.extra_user_content_parts),
     )
+
+    # 钩子只拿到事件（没有请求对象）时安全退出
+    fresh_data_root("entries-no-request")
+    ctx_noreq = FakeContext()
+    plugin_noreq = make_plugin(module, ctx_noreq, {"mode": "hint"})
+    ev_noreq = FakeEvent("帮我写个爬虫抓豆瓣", umo)
+    async for _ in plugin_noreq.on_message(ev_noreq):
+        pass
+    await plugin_noreq.hook_llm_request_v016(ev_noreq)
+    check("钩子只拿到事件时不抛异常", True)
+    check("拿不到请求时不换对话", ctx_noreq.conversation_manager.new_calls == [])
 
 
 async def main() -> int:
