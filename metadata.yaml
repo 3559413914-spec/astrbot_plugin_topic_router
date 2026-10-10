@@ -1,0 +1,6 @@
+name: astrbot_plugin_topic_router
+desc: 话题路由器 —— 自动判断用户这句话是「接着上一个话题」还是「开了新话题」。判定后按模式处理：只记录、注入本轮提示、或自动切换到一个新对话（旧对话完整留档）。
+help: 指令：/topic 查看当前话题状态；/topic new [名称] 手动翻篇；/topic forget 忘记当前话题；/topic off / /topic on 本会话开关自动判断。配置里 mode 默认 mark（只标记，不改上下文），确认判定准确后再改成 auto。
+version: v0.1.5
+author: dsh
+repo: ""

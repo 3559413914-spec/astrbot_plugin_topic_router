@@ -1,0 +1,98 @@
+{
+  "enabled": {
+    "description": "启用插件",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后所有判定和指令都不生效"
+  },
+  "mode": {
+    "description": "判定后的行为",
+    "type": "string",
+    "default": "mark",
+    "options": [
+      "off",
+      "mark",
+      "hint",
+      "auto"
+    ],
+    "hint": "off=不判定；mark=只记录日志（推荐先跑几天看准确率）；hint=额外给本轮模型注入一段临时提示；auto=置信度达标时自动切换到新对话（旧对话保留，不删除）"
+  },
+  "provider_id": {
+    "description": "判定用模型 ID",
+    "type": "string",
+    "default": "deepseek/deepseek-v4-flash",
+    "hint": "填「提供商来源ID/模型名」，例如 deepseek/deepseek-v4-flash。留空则回退到当前会话使用的模型。插件启动时会把可用的模型 ID 打进日志，串不对就去日志里抄一个。"
+  },
+  "auto_threshold": {
+    "description": "自动切换所需置信度",
+    "type": "float",
+    "default": 0.8,
+    "hint": "只有置信度 >= 这个值才自动开新对话，范围 0~1"
+  },
+  "min_new_topic_confidence": {
+    "description": "认定为新话题的最低置信度",
+    "type": "float",
+    "default": 0.6,
+    "hint": "低于这个值一律当作「接着上一个话题」，宁可不切也不乱切"
+  },
+  "always_llm": {
+    "description": "每轮都调用模型判定",
+    "type": "bool",
+    "default": false,
+    "hint": "关闭时先跑零成本启发式规则，只有结果落在模糊区间才调用模型（默认关闭，省 token）"
+  },
+  "sim_continue": {
+    "description": "直接判为「延续」的相似度阈值",
+    "type": "float",
+    "default": 0.5,
+    "hint": "与当前话题的字符相似度高于这个值就不再问模型"
+  },
+  "sim_new_topic": {
+    "description": "直接判为「新话题」的相似度阈值",
+    "type": "float",
+    "default": 0.12,
+    "hint": "相似度低于这个值且没有承接词时判为新话题；两个阈值之间交给模型"
+  },
+  "time_gap_minutes": {
+    "description": "冷启动时间间隔（分钟）",
+    "type": "int",
+    "default": 45,
+    "hint": "距上一条消息超过这么久，且新消息与当前话题相似度不高时，倾向判为新话题"
+  },
+  "min_message_length": {
+    "description": "参与判定的最短消息长度",
+    "type": "int",
+    "default": 6,
+    "hint": "「嗯」「好的」「继续」这类短消息永远算延续，不消耗模型调用"
+  },
+  "history_turns": {
+    "description": "送给判定模型的近期对话轮数",
+    "type": "int",
+    "default": 3,
+    "hint": "越大越准也越费 token，建议 2~4"
+  },
+  "timeout_seconds": {
+    "description": "判定模型超时（秒）",
+    "type": "float",
+    "default": 8.0,
+    "hint": "超时就放弃本次判定，按延续处理，绝不阻塞正常回复"
+  },
+  "max_checks_per_hour": {
+    "description": "每会话每小时模型判定次数上限",
+    "type": "int",
+    "default": 30,
+    "hint": "防止话痨会话把额度烧光；0 表示不限制"
+  },
+  "new_conversation_notice": {
+    "description": "自动切换对话时提示一句",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后机器人会在群里回一句「已开始新话题」"
+  },
+  "debug_log": {
+    "description": "把判定明细打进日志",
+    "type": "bool",
+    "default": true,
+    "hint": "建议先开着，日志里能同时看到启发式打分和模型判定结果，方便你调阈值"
+  }
+}
