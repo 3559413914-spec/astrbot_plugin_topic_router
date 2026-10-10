@@ -207,6 +207,7 @@ def heuristic(
     sim_new_topic: float = 0.12,
     time_gap_minutes: int = 45,
     min_message_length: int = 6,
+    short_message_length: int = 25,
 ) -> HeuristicResult:
     """零成本的一层判定。
 
@@ -218,6 +219,7 @@ def heuristic(
         sim_new_topic: 直接判新话题的相似度阈值。
         time_gap_minutes: 冷启动时间间隔。
         min_message_length: 参与判定的最短长度。
+        short_message_length: 多短算"追问短句"（这类消息单凭字面不判新话题）。
 
     Returns:
         HeuristicResult。
@@ -228,6 +230,7 @@ def heuristic(
     last_text = getattr(state, "last_user_text", "") or ""
     last_ts = float(getattr(state, "last_ts", 0.0) or 0.0)
     has_topic = bool(getattr(state, "label", "") or last_text)
+    gap_minutes = (now - last_ts) / 60 if last_ts else 0.0
 
     # 第一个话题：没有上文可比，直接建档
     if not has_topic:
@@ -237,6 +240,28 @@ def heuristic(
             similarity=0.0,
             needs_llm=True,
             reason="会话内还没有话题，先给它建一个",
+        )
+
+    # ---- 冷启动放在最前面：时间间隔是独立且很强的信号 ----
+    #
+    # 隔了很久再开口（默认 45 分钟），多半是新的一件事。它必须优先于下面所有按字面/长度
+    # 走的分支，否则「今天天气怎么样」这种短消息会白花一次模型调用，而时间信号本已足够；
+    # 也要优先于更下面的"短消息一律按延续"，否则「嗯」隔一小时后仍会被当成延续。
+    if (
+        last_ts
+        and gap_minutes >= time_gap_minutes
+        and compose_similarity(text, state) < sim_continue
+    ):
+        sim = compose_similarity(text, state)
+        return HeuristicResult(
+            verdict=VERDICT_NEW_TOPIC,
+            confidence=0.8,
+            similarity=sim,
+            needs_llm=False,
+            reason=(
+                f"距上一条消息已过 {gap_minutes:.0f} 分钟（阈值 {time_gap_minutes}），"
+                f"且与当前话题重叠不高（{sim:.2f}）"
+            ),
         )
 
     if len(norm) < max(1, min_message_length):
@@ -274,19 +299,45 @@ def heuristic(
             reason=f"与当前话题字面相似度 {sim:.2f}，明显是同一件事",
         )
 
-    gap_minutes = (now - last_ts) / 60 if last_ts else 0.0
-    if sim <= sim_new_topic and not marker:
-        confidence = 0.7
-        reasons = [f"与当前话题几乎不重叠（相似度 {sim:.2f}）"]
-        if gap_minutes >= time_gap_minutes:
-            confidence = 0.8
-            reasons.append(f"距上一条消息已过 {gap_minutes:.0f} 分钟")
+    # ---- 极短且纯指代（「那它呢」「这个呢」）：明确是延续，不必花模型调用 ----
+    #
+    # 门槛刻意压到很短（12 字）：只兜住"整句都在指代上文"的情况。像「那个东西再改改试试」
+    # 这种带具体动作的句子没有信息量可言，还是应该交给模型，不能被这条规则吞掉。
+    if len(norm) <= 12 and any(word in text for word in PRONOUNS):
         return HeuristicResult(
-            verdict=VERDICT_NEW_TOPIC,
-            confidence=confidence,
+            verdict=VERDICT_CONTINUE,
+            confidence=0.75,
             similarity=sim,
             needs_llm=False,
-            reason="；".join(reasons),
+            reason=f"极短且含指代词（相似度 {sim:.2f}），判为延续",
+        )
+
+    # ---- 短消息 + 低相似度，不构成"新话题"的证据 ----
+    #
+    # 真实数据实测（42 轮的飞牛装机会话）：「为啥直接闪退？」「我没有代理啊」
+    # 「等等吧还没做好」这类追问与话题名的字符相似度是 0.00，但它们几乎都是**延续**。
+    # 中文追问换词换得彻底，字面重叠天然趋近 0，所以字面低相似在短句上几乎没有信息量。
+    # 这批消息占了实测样本的 30/65，是误判代价最大的一类（判错 = 用户觉得机器人失忆）。
+    # 处理办法不是猜，而是**把它们交给模型**：模型看得到语义，这里只负责别拦着它。
+    if len(norm) <= max(min_message_length, short_message_length) and not marker:
+        return HeuristicResult(
+            verdict=VERDICT_CONTINUE,
+            confidence=0.5,
+            similarity=sim,
+            needs_llm=True,
+            reason=(
+                f"短句（{len(norm)} 字）且字面不重叠（相似度 {sim:.2f}）："
+                "字面在短句上没有信息量，交给模型判语义"
+            ),
+        )
+
+    if sim <= sim_new_topic and not marker:
+        return HeuristicResult(
+            verdict=VERDICT_NEW_TOPIC,
+            confidence=0.7,
+            similarity=sim,
+            needs_llm=False,
+            reason=f"与当前话题几乎不重叠（相似度 {sim:.2f}）",
         )
 
     if marker and sim > sim_new_topic:
@@ -326,14 +377,20 @@ def build_user_prompt(
     state: Any,
     recent: list[str],
     history_turns: int = 3,
+    last_assistant: str = "",
 ) -> str:
     """拼出送给判定模型的用户侧内容。
+
+    为什么要带"机器人上一句回复"：很多换话题恰好发生在机器人回答之后
+    （"好的，那再问个别的""等等，还有个事"）。只说"最近几条用户消息"，模型看不到
+    上一轮到底答了什么，就没有判断"承接关系"的锚点。
 
     Args:
         message: 用户最新消息。
         state: 当前会话的 TopicState。
         recent: 最近的用户消息（旧到新）。
         history_turns: 最多带上几条历史。
+        last_assistant: 机器人上一句回复（可为空）。
 
     Returns:
         提示词文本。
@@ -347,6 +404,11 @@ def build_user_prompt(
     if tail:
         lines.append("最近几条用户消息（旧到新）：")
         lines.extend(f"- {item[:200]}" for item in tail)
+    reply = (last_assistant or "").strip()
+    if not reply:
+        reply = (getattr(state, "last_assistant_text", "") or "").strip()
+    if reply:
+        lines.append(f"机器人上一句回复：{reply[:300]}")
     lines.append(f"用户最新消息：{message[:800]}")
     lines.append("请输出判定 JSON。")
     return "\n".join(lines)

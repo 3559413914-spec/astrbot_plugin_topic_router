@@ -31,6 +31,12 @@ class TopicState:
     """这份状态绑定的对话 ID；与当前对话不一致时状态作废。"""
     last_user_text: str = ""
     """上一条用户消息（正文），用于相似度和承接词判断。"""
+    last_assistant_text: str = ""
+    """机器人上一条回复（截断后）。
+
+    判定模型需要看到"上一轮答了什么"才能判断承接关系：很多换话题发生在回答之后
+    （"好的，那再问个别的"）。只存截断版，避免状态文件被长回复撑大。
+    """
     last_detected: str = ""
     """上一条**已判定过**的消息正文。
 
@@ -154,6 +160,7 @@ class TopicStore:
                     st.last_detected,
                     round(st.last_ts, 3),
                     len(st.last_user_text),
+                    len(st.last_assistant_text),
                 )
                 for umo, st in self._states.items()
             )
@@ -203,6 +210,7 @@ class TopicStore:
         state.label = ""
         state.summary = ""
         state.last_user_text = ""
+        state.last_assistant_text = ""
         state.last_detected = ""
         state.last_ts = 0.0
         state.turns = 0

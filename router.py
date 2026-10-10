@@ -151,6 +151,12 @@ class _Runtime:
     store: TopicStore | None = None
     recent: dict[str, list[str]] = {}
     pending_actions: dict[str, tuple[str, Verdict]] = {}
+    pending_replies: dict[str, str] = {}
+    """上一轮机器人回复的临时中转：{umo: 文本}。
+
+    只放内存、不落盘：它只在"回复产生 → 下一条消息判定"之间用一次，
+    持久化在 state 里的是按会话保留的最近一条。
+    """
 
 
 RUNTIME = _Runtime()
@@ -179,6 +185,22 @@ _write_import_marker(f"version={PLUGIN_VERSION} file={Path(__file__).resolve()}"
 
 
 # --------------------------------------------------------------------------- 工具
+
+
+def _extract_response_text(candidate: Any) -> str:
+    """从 `LLMResponse` 里取出可读文本。
+
+    Args:
+        candidate: 可能是 `LLMResponse`，也可能是别的对象。
+
+    Returns:
+        纯文本（取不到就返回空串）。
+    """
+    for attr in ("completion_text", "reasoning_content"):
+        value = getattr(candidate, attr, None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def _looks_like_event(candidate: Any) -> bool:
@@ -432,11 +454,14 @@ async def _ask_llm(
         logger.warning(f"[{PLUGIN_NAME}] 上下文不支持 llm_generate，跳过模型判定")
         return None
     timeout = max(1.0, _num("timeout_seconds", 8.0))
+    include_reply = _flag("include_assistant_reply", True)
+    last_reply = (getattr(state, "last_assistant_text", "") or "") if include_reply else ""
     prompt = build_user_prompt(
         message,
         state,
         _recent_for(_umo(event)),
         int(_num("history_turns", 3, int)),
+        last_assistant=last_reply,
     )
     try:
         resp = await asyncio.wait_for(
@@ -564,6 +589,11 @@ async def _detect(ctx: Context | None, event: Any, message: str) -> None:
     if batch_key is not None:
         state.last_detected = batch_key
 
+    # 取上一轮机器人回复（回复钩子先存进 pending_replies），并落到状态里
+    reply = RUNTIME.pending_replies.pop(umo, "")
+    if reply:
+        state.last_assistant_text = reply
+
     started = time.perf_counter()
     result = heuristic(
         message,
@@ -572,6 +602,7 @@ async def _detect(ctx: Context | None, event: Any, message: str) -> None:
         sim_new_topic=_num("sim_new_topic", 0.12),
         time_gap_minutes=int(_num("time_gap_minutes", 45, int)),
         min_message_length=int(_num("min_message_length", 6, int)),
+        short_message_length=int(_num("short_message_length", 25, int)),
     )
 
     llm_verdict: Verdict | None = None
@@ -587,6 +618,7 @@ async def _detect(ctx: Context | None, event: Any, message: str) -> None:
         "needs_llm": result.needs_llm,
         "llm_used": llm_verdict is not None,
         "mode": _mode(),
+        "has_reply": bool(reply),
         "cost_ms": int((time.perf_counter() - started) * 1000),
     }
 
@@ -898,6 +930,41 @@ async def hook_llm_request_v017(*args: Any, **kwargs: Any) -> None:
         await _apply_request_actions(_ctx(), event, req)
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[{PLUGIN_NAME}] 请求改写被跳过：{type(exc).__name__}: {exc}")
+
+
+@filter.on_llm_response()
+async def hook_llm_response_v018(*args: Any, **kwargs: Any) -> None:
+    """记下机器人这一轮的回复，供下一次判定使用。
+
+    判定模型需要"上一轮答了什么"才能判断承接关系：很多换话题发生在回答之后
+    （"好的，那再问个别的"）。AstrBot 的调用点是
+    `call_event_hook(event, EventType.OnLLMResponseEvent, llm_response)`，但这里
+    同样不假设参数位置/名称：用 `_extract` 认事件，再在其余参数里找带文本的对象。
+
+    Args:
+        *args: 派发方给的位置参数（事件、`LLMResponse` 等）。
+        **kwargs: 关键字形式的情况。
+    """
+    event, _req = _extract(*args, **kwargs)
+    reply = ""
+    for candidate in args:
+        if _looks_like_event(candidate):
+            continue
+        text = _extract_response_text(candidate)
+        if text:
+            reply = text
+            break
+    if not reply:
+        for candidate in kwargs.values():
+            if _looks_like_event(candidate):
+                continue
+            text = _extract_response_text(candidate)
+            if text:
+                reply = text
+                break
+    if event is None or not reply:
+        return
+    RUNTIME.pending_replies[_umo(event)] = reply[:1000]
 
 
 @filter.command("topicweave", alias={"话题织机"})

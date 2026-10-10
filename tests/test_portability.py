@@ -118,6 +118,11 @@ def install_stub_astrbot() -> None:
             return _decorator_factory()
 
         @staticmethod
+        def on_llm_response(*_a, **_k):
+            """响应钩子装饰器（用于记录机器人上一句回复）。"""
+            return _decorator_factory()
+
+        @staticmethod
         def command(*_a, **_k):
             """指令装饰器。"""
             return _decorator_factory()

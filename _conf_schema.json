@@ -71,6 +71,18 @@
     "default": 3,
     "hint": "越大越准也越费 token，建议 2~4"
   },
+  "include_assistant_reply": {
+    "description": "把机器人上一句回复也给判定模型看",
+    "type": "bool",
+    "default": true,
+    "hint": "推荐开启：很多换话题发生在机器人回答之后（「好的，那再问个别的」），模型看不到上一轮答了什么就缺少承接关系的锚点。关闭可略微省 token"
+  },
+  "short_message_length": {
+    "description": "多短算「追问短句」",
+    "type": "int",
+    "default": 25,
+    "hint": "不超过这个长度、且与当前话题字面不重叠的消息，不再单凭字面判新话题，而是交给模型判语义。实测这类短句（如「我没有代理啊」「等等吧还没做好」）字面相似度天然趋近 0，但几乎都是延续"
+  },
   "timeout_seconds": {
     "description": "判定模型超时（秒）",
     "type": "float",

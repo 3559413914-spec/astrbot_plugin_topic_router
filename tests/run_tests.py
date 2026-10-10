@@ -452,7 +452,9 @@ async def test_heuristics(module) -> None:
         same.reason,
     )
 
-    other = detection.heuristic("帮我写个 Python 脚本把 csv 转成 excel", state, now=1002.0)
+    other = detection.heuristic(
+        "帮我写个 Python 脚本，把这一批 csv 文件批量转成 excel 表格", state, now=1002.0
+    )
     check("几乎不重叠判新话题", other.verdict == detection.VERDICT_NEW_TOPIC, other.reason)
 
     marked = detection.heuristic("换个话题，帮我看看 NAS 的硬盘", state, now=1002.0)
@@ -461,12 +463,91 @@ async def test_heuristics(module) -> None:
     cold = detection.heuristic("今天天气怎么样", state, now=1000.0 + 3600, time_gap_minutes=45)
     check("冷启动 + 低重叠 = 新话题", cold.verdict == detection.VERDICT_NEW_TOPIC, cold.reason)
 
-    vague = detection.heuristic("那个东西再改改试试", state, now=1002.0, sim_continue=0.99)
+    # 真实数据带来的修正：短句 + 字面零重叠，不再单凭字面判新话题
+    # （实测样本里这类有 30/65 轮，如「我没有代理啊」「等等吧还没做好」，几乎都是延续）
+    followup = detection.heuristic("我没有代理啊", state, now=1003.0)
+    check(
+        "短追问句交给模型判语义（不凭字面判新话题）",
+        followup.needs_llm and followup.verdict == detection.VERDICT_CONTINUE,
+        followup.reason,
+    )
+    check(
+        "短追问句的相似度确实接近 0（说明字面信号无信息量）",
+        followup.similarity <= 0.12,
+        str(followup.similarity),
+    )
+
+    # 短句 + 纯指代：明确延续，不必花模型调用
+    pronoun = detection.heuristic("那它呢", state, now=1003.0)
+    check(
+        "短句含指代词直接判延续且不调模型",
+        pronoun.verdict == detection.VERDICT_CONTINUE and not pronoun.needs_llm,
+        pronoun.reason,
+    )
+
+    # 长句 + 零重叠：仍然由启发式直接判新话题（省一次模型调用）
+    long_new = detection.heuristic(
+        "顺便问一下，飞牛 NAS 上怎么做定时备份到另一台机器，有推荐方案吗", state, now=1003.0
+    )
+    check(
+        "长句零重叠仍直接判新话题",
+        long_new.verdict == detection.VERDICT_NEW_TOPIC and not long_new.needs_llm,
+        long_new.reason,
+    )
+
+    vague = detection.heuristic(
+        "那块板子上原来那个元件现在还能不能继续用啊", state, now=1002.0, sim_continue=0.99
+    )
     check(
         "模糊区间交给模型",
         vague.needs_llm and vague.verdict == detection.VERDICT_CONTINUE,
         vague.reason,
     )
+
+
+async def test_user_prompt_contains_reply(module) -> None:
+    """判定提示词里必须带上"机器人上一句回复"。
+
+    实测结论：很多换话题发生在机器人回答之后，模型看不到上一轮答了什么就没有承接关系的
+    锚点。这条用例把"回复会进提示词"钉死，避免以后重构时被悄悄去掉。
+
+    Args:
+        module: 插件模块。
+    """
+    print("\n[14] 判定提示词内容")
+    detection = sys.modules["data.plugins.astrbot_plugin_topic_router.detection"]
+    state = SimpleNamespace(
+        label="飞牛 NAS 安装",
+        summary="在装飞牛系统",
+        last_user_text="格式化好慢啊",
+        last_assistant_text="1T 机械盘那正常，慢慢等着吧",
+        last_ts=0.0,
+    )
+
+    with_reply = detection.build_user_prompt(
+        "那我现在咋退出去",
+        state,
+        ["格式化好慢啊"],
+        3,
+        last_assistant="按 Ctrl+Alt+Del 重启就行",
+    )
+    check("提示词带上了机器人上一句回复", "按 Ctrl+Alt+Del 重启就行" in with_reply)
+    check("提示词仍然带当前话题", "飞牛 NAS 安装" in with_reply)
+    check("提示词带上了用户最新消息", "那我现在咋退出去" in with_reply)
+
+    from_state = detection.build_user_prompt("那我现在咋退出去", state, [], 3)
+    check(
+        "不显式传回复时，回退到 state 里的 last_assistant_text",
+        "1T 机械盘那正常" in from_state,
+    )
+
+    no_reply = detection.build_user_prompt(
+        "那我现在咋退出去",
+        SimpleNamespace(label="某话题", summary="", last_user_text="x", last_ts=0.0),
+        [],
+        3,
+    )
+    check("没有回复时不出现空行标签", "机器人上一句回复" not in no_reply)
 
 
 async def test_json_parsing(module) -> None:
@@ -1116,6 +1197,7 @@ async def main() -> int:
         await test_topic_command(plugin_main)
         await test_entry_points(plugin_main)
         await test_handlers_are_module_level(plugin_main)
+        await test_user_prompt_contains_reply(plugin_main)
     except Exception:  # noqa: BLE001
         traceback.print_exc()
         FAILED.append("测试脚本本身抛异常")

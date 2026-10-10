@@ -63,11 +63,16 @@ AstrBot 的对话是一整条上下文。当用户在同一个会话里从"帮�
 
 所以插件的默认姿势是「先观察，后行动」。
 
-**判定分两层，省钱：**
+**判定分两层：**
 
-1. **零成本启发式**（每条消息都跑）：与当前话题的字符相似度、承接词（继续/还有/那个）、
-   显式换话题词（换个话题/顺便问）、时间间隔、消息长度；
-2. **模型判定**（只在模糊区间才调用一次便宜模型，默认 `deepseek/deepseek-v4-flash`）。
+1. **零成本启发式**（每条消息都跑）：承接词（继续/还有/那个）、显式换话题词
+   （换个话题/顺便问）、时间间隔、消息长度，以及与会话内文字的字符相似度；
+2. **模型判定**（在启发式拿不准时才调用一次便宜模型，默认 `deepseek/deepseek-v4-flash`）。
+
+> ⚠️ 关于字符相似度的一个实测结论：中文追问换词换得很彻底，**字面重叠天然趋近 0**
+> （实测样本里 88% 的轮次相似度 ≤0.12，中位数 0.00）。所以插件**不把"字面不重叠"
+> 当成新话题的证据**——短句（默认 ≤25 字）一律交给模型判语义。原因见
+> [用真实数据调参](#用真实数据调参)。
 
 模型说错话、超时、报错**一律按「延续」处理**——判定失败绝不影响正常回复。
 
@@ -406,6 +411,8 @@ export ASTRBOT_ROOT=/opt/astrbot      # 之后数据都在 /opt/astrbot/data
 | `time_gap_minutes` | `45` | 冷启动间隔，超过它倾向判新话题 |
 | `min_message_length` | `6` | 短于它的消息（如"嗯""继续"）不判定 |
 | `history_turns` | `3` | 送给判定模型的近期消息条数 |
+| `include_assistant_reply` | `true` | 把机器人上一句回复也给判定模型看（很多换话题发生在回答之后） |
+| `short_message_length` | `25` | 不超过这个长度且字面不重叠的消息，交给模型判语义而不是直接判新话题 |
 | `timeout_seconds` | `8` | 判定模型超时，超时按延续处理 |
 | `max_checks_per_hour` | `30` | 每个会话每小时的模型判定上限（0 不限） |
 | `new_conversation_notice` | `true` | `auto` 切换时是否在群里说一句 |
@@ -450,21 +457,50 @@ export ASTRBOT_ROOT=/opt/astrbot      # 之后数据都在 /opt/astrbot/data
 
 ---
 
+## 用真实数据调参
+
+插件带一个评测台：把**你自己的真实聊天记录**灌进判定流水线，输出可对比的数字。
+阈值该调多少，用它看，别猜。
+
+```bash
+# 读 AstrBot 的数据库（~/.astrbot/data/data_v4.db），纯启发式、零网络
+python tests/eval_topic_detection.py
+
+# 同时跑"旧启发式 vs 当前"，看改动到底有没有用
+python tests/eval_topic_detection.py --compare-legacy
+
+# 换阈值做敏感性分析
+python tests/eval_topic_detection.py --sim-new-topic 0.3 --gap-minutes 30
+
+# 把指标存下来，改前改后各存一份对比
+python tests/eval_topic_detection.py --json-out before.json
+```
+
+报告里有：混淆矩阵、精确率 / 召回率 / F1、**模型调用占比**（判断省钱与否）、
+判为"新话题"的置信度分布（决定 `auto_threshold` 定在哪）、以及误判样例。
+
+**关于真值**：真实数据没有人工标注的"话题边界"，所以脚本默认用**时间间隔代理**
+（相邻消息间隔超过 `--gap-minutes` 记为新话题），也可以用 `--labels` 传手工标注。
+代理口径本身有噪声，**它的绝对值只当参考，真正有用的是同一口径下的前后对比**。
+
 ## 开发与测试
 
 四套离线测试，都不需要启动 AstrBot（除了第一套需要 AstrBot 的 Python 环境来 import 真实 API）：
 
 ```bash
-# 1) 插件逻辑：124 项（需要 AstrBot 的 python；桌面版在 ~/.astrbot 之外）
+# 1) 插件逻辑：135 项（需要 AstrBot 的 python；桌面版在 ~/.astrbot 之外）
 python tests/run_tests.py
 
 # 2) 可移植性：16 项（用桩模块，任意 Python 3.10+）
 python tests/test_portability.py
 
-# 3) 注册表复用复现：9 项（验证 AstrBot 的 handler 注册表行为）
+# 3) 真实数据评测台（零网络，任意 Python 3.10+）
+python tests/eval_topic_detection.py --compare-legacy
+
+# 4) 注册表复用复现：9 项（验证 AstrBot 的 handler 注册表行为）
 python tests/reproduce_hook_dispatch.py
 
-# 4) zip 安装流程：21 项（需要 AstrBot v4.28.1 源码，见脚本内提示）
+# 5) zip 安装流程：21 项（需要 AstrBot v4.28.1 源码，见脚本内提示）
 python tests/verify_zip_install.py
 ```
 
@@ -488,6 +524,7 @@ Linux 上的 AstrBot 解包后会抛 `FileNotFoundError`；此外它还会把 `t
 | `state.py` | 话题状态持久化（按会话分条） |
 | `_conf_schema.json` | WebUI 配置项定义 |
 | `metadata.yaml` | 插件元信息 |
+| `tests/eval_topic_detection.py` | 真实数据评测台（阈值调参用，不进安装包） |
 
 > **给改代码的人**：这个插件的 handler 是**模块级函数**（不是类方法），状态放在模块级
 > `RUNTIME` / `_CTX` 上，方法体里不允许出现 `self.xxx`。原因写在 `router.py` 文件头——
