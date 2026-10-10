@@ -10,6 +10,18 @@ data/
 plugin_data/
 *.log
 
+# 密钥与凭据：绝不进仓库
+# （AstrBot 的密钥在 data/cmd_config.json 里，已被上面的 data/ 覆盖；
+#   这里再兜一层，防止以后有人把配置或凭据放到仓库根目录）
+.env
+.env.*
+*.key
+*.pem
+*credential*
+*secret*
+cmd_config.json
+settings.yaml.imported
+
 # 本地打包产物
 dist/
 *.zip
