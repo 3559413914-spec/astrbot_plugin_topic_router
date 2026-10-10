@@ -1,5 +1,30 @@
 # 更新日志
 
+## v0.1.8
+
+**架构修正：状态与逻辑从 `self` 搬到模块级——这是本插件能在这个环境跑起来的关键。**
+
+实机（4.28.1 + webchat）反复出现同一个现象：插件加载正常、版本日志正常，但判定
+日志一条都没有。日志最终给出了铁证：
+
+```
+hook_llm_request_v016 被调用 | self=WebChatMessageEvent | has_event=False | args=['ProviderRequest']
+AttributeError: 'WebChatMessageEvent' object has no attribute '_request_from_event'
+```
+
+**这个环境派发插件 handler 时没有把实例绑到 `self`，`self` 拿到的是事件对象。**
+于是任何 `self.xxx` 都会抛 `AttributeError`；而 `handle_message` 的入口日志外面正好
+包着 `except`，异常被静默吞掉 → 表现就是"插件在跑，但什么都不输出"。
+
+- 状态（config / store / recent / pending_actions / ctx）全部移到模块级单例
+  `RUNTIME` 与 `_CTX`；
+- 判定逻辑改为**模块级函数**（显式接收 `ctx`），可离线测试；
+- 三个 handler（`handle_message_v017` / `hook_llm_request_v017` /
+  `command_topic_v017`）只做"认参数 → 转调模块函数"，参数识别只用 `isinstance`，
+  方法体里**不出现任何 `self.xxx`**；
+- `on_loaded_v017` 同样不依赖 `self`；
+- 测试同步到新架构（模块级状态需要显式重置），111 项全过。
+
 ## v0.1.7
 
 - **修：判定处理器可能压根没轮到执行**。AstrBot 的 `star_request.py` 是

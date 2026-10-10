@@ -65,6 +65,7 @@ def fresh_data_root(label: str) -> Path:
     path = _DATA_ROOT / label / f"run-{PASSED}-{len(FAILED)}"
     path.mkdir(parents=True, exist_ok=True)
     os.environ["ASTROBOT_DATA_PATH"] = str(path)
+    reset_runtime()
     return path
 
 
@@ -321,6 +322,38 @@ def make_plugin(module, context: FakeContext, config: dict):
     return module.TopicRouterPlugin(context, config)
 
 
+MODULE = None
+
+
+def state_store():
+    """取当前模块级话题状态存储。
+
+    新架构里 store 不再挂在插件实例上，测试也要跟着改。
+
+    Returns:
+        TopicStore 实例。
+    """
+    return MODULE.RUNTIME.store
+
+
+def reset_runtime() -> None:
+    """把模块级运行时状态清空。
+
+    新架构的状态放在模块级单例 RUNTIME 里（不再挂在实例上，因为实机派发 handler
+    时 self 可能不是插件实例），所以每个用例必须显式重置，否则会串味。
+    """
+    if MODULE is None:
+        return
+    module = MODULE
+    data_dir = (
+        Path(os.environ["ASTROBOT_DATA_PATH"]) / "plugin_data" / module.PLUGIN_NAME
+    )
+    module.RUNTIME.config = {}
+    module.RUNTIME.store = module.TopicStore(data_dir / "topic_state.json")
+    module.RUNTIME.recent = {}
+    module.RUNTIME.pending_actions = {}
+
+
 async def run_detect(plugin, event, req=None):
     """按实机的调用顺序驱动一次判定。
 
@@ -340,7 +373,7 @@ async def run_detect(plugin, event, req=None):
     async for _ in plugin.handle_message_v017(event):
         pass
     if req is not None:
-        await plugin.hook_llm_request_v016(event, req)
+        await plugin.hook_llm_request_v017(event, req)
 
 
 async def test_metadata(module, tmp_root: Path) -> None:
@@ -523,15 +556,15 @@ async def test_mark_mode(module) -> None:
     check("contexts 未被改动", len(req.contexts) == 1)
     check("没有注入额外内容块", len(req.extra_user_content_parts) == 0)
     check("没有向用户发言", event.sent == [])
-    check("状态里记下了话题名称", plugin.store.get(event.unified_msg_origin).label == "电路板")
+    check("状态里记下了话题名称", state_store().get(event.unified_msg_origin).label == "电路板")
     check("调用了判定模型", len(context.calls) == 1, str(context.calls))
     prompt = context.calls[0]["prompt"] if context.calls else ""
     check("提示词带上了最新消息", "豆瓣" in prompt, prompt[:120])
-    check("判定了但没动上下文", plugin.store.get(event.unified_msg_origin).switches == 1)
+    check("判定了但没动上下文", state_store().get(event.unified_msg_origin).switches == 1)
     check(
         "同一条消息不会被判定两次（两个入口去重）",
-        plugin.store.get(event.unified_msg_origin).turns == 1,
-        f"turns={plugin.store.get(event.unified_msg_origin).turns}",
+        state_store().get(event.unified_msg_origin).turns == 1,
+        f"turns={state_store().get(event.unified_msg_origin).turns}",
     )
 
 
@@ -587,14 +620,14 @@ async def test_auto_mode(module) -> None:
     context3.answer = '{"verdict":"continue","confidence":0.9,"topic_name":"爬虫"}'
     same = "帮我写个爬虫，要支持代理"
     await run_detect(plugin3, FakeEvent(same), ProviderRequest(prompt=same))
-    switches_before = plugin3.store.get(event3.unified_msg_origin).switches
+    switches_before = state_store().get(event3.unified_msg_origin).switches
     context3.answer = '{"verdict":"new_topic","confidence":0.4,"topic_name":"随便"}'
     low = "帮我写个爬虫，再加个去重"
     await run_detect(plugin3, FakeEvent(low), ProviderRequest(prompt=low))
     check(
         "被压回的判定不计入新话题数",
-        plugin3.store.get(event3.unified_msg_origin).switches == switches_before,
-        f"before={switches_before} after={plugin3.store.get(event3.unified_msg_origin).switches}",
+        state_store().get(event3.unified_msg_origin).switches == switches_before,
+        f"before={switches_before} after={state_store().get(event3.unified_msg_origin).switches}",
     )
 
 
@@ -645,16 +678,16 @@ async def test_request_hook_alone(module) -> None:
 
     req = ProviderRequest(prompt=event.message_str)
     # 只走钩子：先挂起、再执行，等价于实机上"消息事件没触发、只有钩子"的情况
-    await plugin.hook_llm_request_v016(event, req)
+    await plugin.hook_llm_request_v017(event, req)
     # 钩子本身不做判定（判定属于消息事件），所以这里不应该有注入
     check("钩子单独调用不会凭空判定", len(req.extra_user_content_parts) == 0)
 
     # 走完消息事件后，挂起动作会在下一次钩子调用时执行
     async for _ in plugin.handle_message_v017(event):
         pass
-    check("消息事件完成了判定", plugin.store.get(umo).turns == 1)
+    check("消息事件完成了判定", state_store().get(umo).turns == 1)
     req2 = ProviderRequest(prompt=event.message_str)
-    await plugin.hook_llm_request_v016(event, req2)
+    await plugin.hook_llm_request_v017(event, req2)
     check("挂起的 hint 动作已执行", len(req2.extra_user_content_parts) == 1)
 
     # 同一条消息再走一遍消息事件，不应该被判定两次
@@ -662,8 +695,8 @@ async def test_request_hook_alone(module) -> None:
         pass
     check(
         "重复到达的消息被跳过",
-        plugin.store.get(umo).turns == 1,
-        f"turns={plugin.store.get(umo).turns}",
+        state_store().get(umo).turns == 1,
+        f"turns={state_store().get(umo).turns}",
     )
 
     # 用户真的把同一句话又发了一遍（新的消息 id）→ 应该算新的一轮
@@ -672,8 +705,8 @@ async def test_request_hook_alone(module) -> None:
         pass
     check(
         "用户重发同样的话算新一轮",
-        plugin.store.get(umo).turns == 2,
-        f"turns={plugin.store.get(umo).turns}",
+        state_store().get(umo).turns == 2,
+        f"turns={state_store().get(umo).turns}",
     )
 
 
@@ -695,42 +728,42 @@ async def test_state_lifecycle(module) -> None:
         await run_detect(plugin, FakeEvent(text, umo), ProviderRequest(prompt=text))
     check("超过每小时上限后不再调模型", len(context.calls) == 2, f"calls={len(context.calls)}")
 
-    state = plugin.store.get(umo)
+    state = state_store().get(umo)
     check("状态绑定了当前对话", state.conv_id == context.conversation_manager.current[umo])
     check("消息计入轮数", state.turns >= 3)
     check("三轮后话题名还在", bool(state.label), f"label={state.label!r}")
 
     # 换对话后旧话题作废（统计与开关要留着）
-    switches_before = plugin.store.get(umo).switches
+    switches_before = state_store().get(umo).switches
     context.conversation_manager.current[umo] = "manual-new"
     await run_detect(plugin, FakeEvent("全新的一句话", umo), ProviderRequest(prompt="全新的一句话"))
     check(
         "换对话后旧话题被清掉",
-        plugin.store.get(umo).label != "电路板",
-        f"label={plugin.store.get(umo).label}",
+        state_store().get(umo).label != "电路板",
+        f"label={state_store().get(umo).label}",
     )
-    check("换对话不清空累计统计", plugin.store.get(umo).switches >= switches_before)
+    check("换对话不清空累计统计", state_store().get(umo).switches >= switches_before)
 
     # /topic off 后完全不动
-    plugin.store.get(umo).disabled = True
-    plugin.store.mark_dirty()
-    plugin.store.save()
+    state_store().get(umo).disabled = True
+    state_store().mark_dirty()
+    state_store().save()
     before = len(context.calls)
     await run_detect(plugin, FakeEvent("再聊点别的", umo), ProviderRequest(prompt="再聊点别的"))
     check("off 之后不再调用模型", len(context.calls) == before)
 
-    saved = json.loads(plugin.store.path.read_text(encoding="utf-8"))
+    saved = json.loads(state_store().path.read_text(encoding="utf-8"))
     check("状态文件已写出", "states" in saved and umo in saved["states"])
     check("状态文件有版本号", saved.get("version") == 1)
 
     from data.plugins.astrbot_plugin_topic_router.state import TopicStore
 
-    reloaded = TopicStore(plugin.store.path)
+    reloaded = TopicStore(state_store().path)
     check("重新载入后开关还在", reloaded.get(umo).disabled is True)
     check(
         "重新载入后话题还在",
         bool(reloaded.get(umo).label),
-        f"内存 label={plugin.store.get(umo).label!r} "
+        f"内存 label={state_store().get(umo).label!r} "
         f"磁盘 label={saved['states'][umo].get('label')!r}",
     )
 
@@ -759,7 +792,7 @@ async def test_failure_paths(module) -> None:
             FakeEvent("帮我写个爬虫抓豆瓣", umo),
             ProviderRequest(prompt="帮我写个爬虫抓豆瓣"),
         )
-        check(f"{name}前状态已建立", bool(plugin.store.get(umo).label))
+        check(f"{name}前状态已建立", bool(state_store().get(umo).label))
 
         context.fail = exc
         context.answer = '{"verdict":"new_topic","confidence":0.95,"topic_name":"别的事"}'
@@ -774,8 +807,8 @@ async def test_failure_paths(module) -> None:
         check(f"{name}时上下文未被改动", len(req.contexts) == 1)
         check(
             f"{name}时按延续推进状态",
-            plugin.store.get(umo).turns == 2,
-            f"turns={plugin.store.get(umo).turns}",
+            state_store().get(umo).turns == 2,
+            f"turns={state_store().get(umo).turns}",
         )
 
     fresh_data_root("failure-unparseable")
@@ -816,7 +849,7 @@ async def test_topic_command(module) -> None:
         """
         ev = FakeEvent(message, umo)
         out = []
-        async for result in plugin.topic_cmd(ev):
+        async for result in plugin.command_topic_v017(ev):
             out.append(result["text"])
         return out
 
@@ -826,15 +859,15 @@ async def test_topic_command(module) -> None:
 
     await collect("/topic new 手动话题")
     check("/topic new 建了新对话", len(context.conversation_manager.new_calls) == 1)
-    check("/topic new 记下了话题名", plugin.store.get(umo).label == "手动话题")
+    check("/topic new 记下了话题名", state_store().get(umo).label == "手动话题")
 
     await collect("/topic off")
-    check("/topic off 生效", plugin.store.get(umo).disabled is True)
+    check("/topic off 生效", state_store().get(umo).disabled is True)
     await collect("/topic on")
-    check("/topic on 生效", plugin.store.get(umo).disabled is False)
+    check("/topic on 生效", state_store().get(umo).disabled is False)
 
     await collect("/topic forget")
-    check("/topic forget 清空话题", plugin.store.get(umo).label == "")
+    check("/topic forget 清空话题", state_store().get(umo).label == "")
 
     unknown = await collect("/topic 胡说八道")
     check("未知子命令给用法提示", "用法" in unknown[0])
@@ -852,13 +885,27 @@ async def test_entry_points(module) -> None:
     from astrbot.api.provider import ProviderRequest
 
     seen = inspect.signature(module.TopicRouterPlugin.handle_message_v017)
+    seen_params = list(seen.parameters.values())
+    seen_required = [
+        p.name
+        for p in seen_params
+        if p.default is inspect.Parameter.empty
+        and p.kind
+        not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+    ]
     check(
-        "消息处理器只要求 event（调用约定确定）",
-        [p.name for p in seen.parameters.values()][:2] == ["self", "event"],
-        str([p.name for p in seen.parameters.values()]),
+        "消息处理器除了 self 不要求任何参数（self 绑错也不会报错）",
+        seen_required == ["self"],
+        str(seen_required),
+    )
+    check(
+        "消息处理器用 *args/**kwargs 接住事件",
+        any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in seen_params)
+        and any(p.kind is inspect.Parameter.VAR_KEYWORD for p in seen_params),
+        str([(p.name, p.kind.name) for p in seen_params]),
     )
 
-    hook = inspect.signature(module.TopicRouterPlugin.hook_llm_request_v016)
+    hook = inspect.signature(module.TopicRouterPlugin.hook_llm_request_v017)
     params = list(hook.parameters.values())
     required = [
         p.name
@@ -880,7 +927,7 @@ async def test_entry_points(module) -> None:
     )
     # 这条是给未来改代码的人（包括我自己）的警告：AstrBot 按"模块+函数名"复用
     # handler 元数据，方法名一旦叫回 on_llm_request，就会命中旧条目、新代码永不生效。
-    hook_name = module.TopicRouterPlugin.hook_llm_request_v016.__name__
+    hook_name = module.TopicRouterPlugin.hook_llm_request_v017.__name__
     check("请求钩子的方法名不是 on_llm_request", hook_name != "on_llm_request", hook_name)
     check(
         "请求钩子的方法名带版本号",
@@ -894,7 +941,7 @@ async def test_entry_points(module) -> None:
     fresh_data_root("entries-bare")
     context = FakeContext()
     plugin = make_plugin(module, context, {"mode": "mark"})
-    await plugin.hook_llm_request_v016(FakeEvent("你好", umo))
+    await plugin.hook_llm_request_v017(FakeEvent("你好", umo))
     check("钩子只传 event 不抛异常", True)
 
     # 位置参数 / 关键字参数里的请求都能认出来
@@ -905,7 +952,7 @@ async def test_entry_points(module) -> None:
     real_req = ProviderRequest(prompt=ev_pos.message_str)
     async for _ in plugin_pos.handle_message_v017(ev_pos):
         pass
-    await plugin_pos.hook_llm_request_v016(ev_pos, real_req)
+    await plugin_pos.hook_llm_request_v017(ev_pos, real_req)
     check(
         "位置参数里的请求被认出来",
         len(real_req.extra_user_content_parts) == 1,
@@ -919,7 +966,7 @@ async def test_entry_points(module) -> None:
     kw_req = ProviderRequest(prompt=ev_kw.message_str)
     async for _ in plugin_kw.handle_message_v017(ev_kw):
         pass
-    await plugin_kw.hook_llm_request_v016(ev_kw, req=kw_req)
+    await plugin_kw.hook_llm_request_v017(ev_kw, req=kw_req)
     check(
         "关键字参数里的请求被认出来",
         len(kw_req.extra_user_content_parts) == 1,
@@ -937,7 +984,7 @@ async def test_entry_points(module) -> None:
         pass
     # 直接按"未绑定函数"的方式调用：第一个位置参数会落到 self 上
     try:
-        await type(plugin_unbound).hook_llm_request_v016(ev_unbound, req_unbound)
+        await type(plugin_unbound).hook_llm_request_v017(ev_unbound, req_unbound)
         unbound_ok = True
     except Exception as exc:  # noqa: BLE001 - 就是要看它会不会炸
         unbound_ok = False
@@ -956,7 +1003,7 @@ async def test_entry_points(module) -> None:
     ev_noreq = FakeEvent("帮我写个爬虫抓豆瓣", umo)
     async for _ in plugin_noreq.handle_message_v017(ev_noreq):
         pass
-    await plugin_noreq.hook_llm_request_v016(ev_noreq)
+    await plugin_noreq.hook_llm_request_v017(ev_noreq)
     check("钩子只拿到事件时不抛异常", True)
     check("拿不到请求时不换对话", ctx_noreq.conversation_manager.new_calls == [])
 
@@ -971,6 +1018,9 @@ async def main() -> int:
     try:
         install_plugin_as_package(tmp_root)
         import data.plugins.astrbot_plugin_topic_router.main as plugin_main
+
+        global MODULE
+        MODULE = sys.modules["data.plugins.astrbot_plugin_topic_router.router"]
 
         await test_metadata(plugin_main, tmp_root)
         await test_heuristics(plugin_main)
