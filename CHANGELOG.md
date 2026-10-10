@@ -1,5 +1,19 @@
 # 更新日志
 
+## v0.1.7
+
+- **修：判定处理器可能压根没轮到执行**。AstrBot 的 `star_request.py` 是
+  `for handler in activated_handlers: if event.is_stopped(): break`，而任何一个
+  handler 抛异常都会 `event.stop_event()`。实机上注册表里残留的旧 handler 先抛
+  `TypeError` → 事件被停掉 → 排在后面的 `on_message` **一次都没执行**，日志里因此
+  只有报错、没有判定结果。
+  - 判定处理器改名为 `handle_message_v017`（同样避开"按名复用旧条目"），并加**入口
+    日志**，一眼看出"轮到我没有"；
+  - `_detect` 外层加兜底：判定层任何异常都自己吞掉并记全栈，绝不 `stop_event()`
+    连累同一条消息上的其它插件。
+- 附：那两条零点报错来自注册表里的**内存僵尸条目**，与磁盘上的代码无关，**重启
+  AstrBot 进程**后消失。
+
 ## v0.1.6
 
 - **修：钩子的 `self` 可能不是插件实例**。实机日志（4.28.1 + WebChat）显示，改名后的

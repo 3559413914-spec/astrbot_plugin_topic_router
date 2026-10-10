@@ -412,19 +412,19 @@ class TopicRouterPlugin(Star):
     # ------------------------------------------------------------------ 主钩子
 
     @filter.event_message_type(filter.EventMessageType.ALL)
-    async def on_message(self, event: AstrMessageEvent):
+    async def handle_message_v017(self, event: AstrMessageEvent):
         """主判定入口：消息事件。
 
-        为什么不用 `on_llm_request` 当主入口：那个钩子在本机的 AstrBot 4.28.1 上
-        被调用时，`star_handlers_registry` 里绑定的方法**不是本类当前定义的那个**
-        （报 `missing 1 required positional argument: 'req'`，而本类签名是
-        `(event, *args, **kwargs)`，不可能缺参，且只要进函数就会打日志——日志里
-        一次都没有）。参数绑定在进函数之前就失败了，插件侧无从修复。
+        **为什么必须有入口日志：** AstrBot 的 `star_request.py` 是
 
-        消息事件的调用约定是确定的（永远 `handler(event)`），AstrBot 里所有插件都
-        在用它，所以把它作为**唯一可靠的判定入口**：判定、状态维护、日志、`/topic`
-        状态全部由这里驱动。需要改写请求的 `hint` / `auto` 仍然由 `on_llm_request`
-        在能拿到 `ProviderRequest` 时补上（见 `_pending_actions`）。
+            for handler in activated_handlers:
+                if event.is_stopped(): break
+                try: ... except Exception: ...; event.stop_event()
+
+        也就是说，任何一个 handler 抛异常并 `stop_event()`，**同一条消息排在它后面的
+        handler 全部不会执行**。实机上就出现过：注册表里残留的旧 handler 先抛
+        TypeError → 事件被停掉 → 本方法一次都没跑，日志里因此只有报错、没有判定结果。
+        入口这一行是判断"到底轮到我没有"的唯一可靠证据。
 
         Args:
             event: 消息事件。
@@ -433,8 +433,24 @@ class TopicRouterPlugin(Star):
             None: 本处理器只做判定与记录，不占用消息（不回复、不阻断）。
         """
         message = (getattr(event, "message_str", "") or "").strip()
+        try:
+            logger.info(
+                f"[{PLUGIN_NAME}] handle_message_v017 被调用 | {PLUGIN_VERSION} "
+                f"| umo={getattr(event, 'unified_msg_origin', '?')} "
+                f"| msg={message[:40]!r} | stopped={event.is_stopped()}"
+            )
+        except Exception:  # noqa: BLE001 - 诊断日志绝不能影响主流程
+            pass
         if message:
-            await self._detect(event, message, None)
+            try:
+                await self._detect(event, message, None)
+            except Exception as exc:  # noqa: BLE001
+                # 判定层绝不能让事件抛出去：AstrBot 会 stop_event()，同一条消息后面
+                # 的插件全部遭殃（这也是我们排查时踩过的坑）。这里兜住并记全栈。
+                logger.error(
+                    f"[{PLUGIN_NAME}] 话题判定异常（已兜住，不影响其它插件）：{exc}",
+                    exc_info=True,
+                )
         return
         yield  # pragma: no cover - 让它是异步生成器，框架两种形态都接受
 

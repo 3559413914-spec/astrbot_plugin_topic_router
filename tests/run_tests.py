@@ -337,7 +337,7 @@ async def run_detect(plugin, event, req=None):
         event: 消息事件。
         req: `ProviderRequest`，为 None 时只走消息事件路径。
     """
-    async for _ in plugin.on_message(event):
+    async for _ in plugin.handle_message_v017(event):
         pass
     if req is not None:
         await plugin.hook_llm_request_v016(event, req)
@@ -650,7 +650,7 @@ async def test_request_hook_alone(module) -> None:
     check("钩子单独调用不会凭空判定", len(req.extra_user_content_parts) == 0)
 
     # 走完消息事件后，挂起动作会在下一次钩子调用时执行
-    async for _ in plugin.on_message(event):
+    async for _ in plugin.handle_message_v017(event):
         pass
     check("消息事件完成了判定", plugin.store.get(umo).turns == 1)
     req2 = ProviderRequest(prompt=event.message_str)
@@ -658,7 +658,7 @@ async def test_request_hook_alone(module) -> None:
     check("挂起的 hint 动作已执行", len(req2.extra_user_content_parts) == 1)
 
     # 同一条消息再走一遍消息事件，不应该被判定两次
-    async for _ in plugin.on_message(event):
+    async for _ in plugin.handle_message_v017(event):
         pass
     check(
         "重复到达的消息被跳过",
@@ -668,7 +668,7 @@ async def test_request_hook_alone(module) -> None:
 
     # 用户真的把同一句话又发了一遍（新的消息 id）→ 应该算新的一轮
     same_text_again = FakeEvent("帮我写个爬虫抓豆瓣", umo)
-    async for _ in plugin.on_message(same_text_again):
+    async for _ in plugin.handle_message_v017(same_text_again):
         pass
     check(
         "用户重发同样的话算新一轮",
@@ -851,9 +851,9 @@ async def test_entry_points(module) -> None:
 
     from astrbot.api.provider import ProviderRequest
 
-    seen = inspect.signature(module.TopicRouterPlugin.on_message)
+    seen = inspect.signature(module.TopicRouterPlugin.handle_message_v017)
     check(
-        "on_message 只要求 event（调用约定确定）",
+        "消息处理器只要求 event（调用约定确定）",
         [p.name for p in seen.parameters.values()][:2] == ["self", "event"],
         str([p.name for p in seen.parameters.values()]),
     )
@@ -903,7 +903,7 @@ async def test_entry_points(module) -> None:
     plugin_pos = make_plugin(module, ctx_pos, {"mode": "hint"})
     ev_pos = FakeEvent("帮我写个爬虫抓豆瓣", umo)
     real_req = ProviderRequest(prompt=ev_pos.message_str)
-    async for _ in plugin_pos.on_message(ev_pos):
+    async for _ in plugin_pos.handle_message_v017(ev_pos):
         pass
     await plugin_pos.hook_llm_request_v016(ev_pos, real_req)
     check(
@@ -917,7 +917,7 @@ async def test_entry_points(module) -> None:
     plugin_kw = make_plugin(module, ctx_kw, {"mode": "hint"})
     ev_kw = FakeEvent("帮我写个爬虫抓豆瓣", umo)
     kw_req = ProviderRequest(prompt=ev_kw.message_str)
-    async for _ in plugin_kw.on_message(ev_kw):
+    async for _ in plugin_kw.handle_message_v017(ev_kw):
         pass
     await plugin_kw.hook_llm_request_v016(ev_kw, req=kw_req)
     check(
@@ -933,7 +933,7 @@ async def test_entry_points(module) -> None:
     plugin_unbound = make_plugin(module, ctx_unbound, {"mode": "hint"})
     ev_unbound = FakeEvent("帮我写个爬虫抓豆瓣", umo)
     req_unbound = ProviderRequest(prompt=ev_unbound.message_str)
-    async for _ in plugin_unbound.on_message(ev_unbound):
+    async for _ in plugin_unbound.handle_message_v017(ev_unbound):
         pass
     # 直接按"未绑定函数"的方式调用：第一个位置参数会落到 self 上
     try:
@@ -954,7 +954,7 @@ async def test_entry_points(module) -> None:
     ctx_noreq = FakeContext()
     plugin_noreq = make_plugin(module, ctx_noreq, {"mode": "hint"})
     ev_noreq = FakeEvent("帮我写个爬虫抓豆瓣", umo)
-    async for _ in plugin_noreq.on_message(ev_noreq):
+    async for _ in plugin_noreq.handle_message_v017(ev_noreq):
         pass
     await plugin_noreq.hook_llm_request_v016(ev_noreq)
     check("钩子只拿到事件时不抛异常", True)
