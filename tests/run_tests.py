@@ -832,7 +832,7 @@ async def test_topic_command(module) -> None:
     Args:
         module: 插件模块。
     """
-    print("\n[10] /topic 指令")
+    print("\n[10] /topicweave 指令")
     fresh_data_root("command")
     context = FakeContext()
     plugin = make_plugin(module, context, {"mode": "mark"})
@@ -853,23 +853,23 @@ async def test_topic_command(module) -> None:
             out.append(result["text"])
         return out
 
-    status = await collect("/topic")
+    status = await collect("/topicweave")
     check("status 有输出", len(status) == 1 and "当前话题状态" in status[0])
     check("status 里带版本号", any(module.PLUGIN_VERSION in line for line in status))
 
-    await collect("/topic new 手动话题")
-    check("/topic new 建了新对话", len(context.conversation_manager.new_calls) == 1)
-    check("/topic new 记下了话题名", state_store().get(umo).label == "手动话题")
+    await collect("/topicweave new 手动话题")
+    check("/topicweave new 建了新对话", len(context.conversation_manager.new_calls) == 1)
+    check("/topicweave new 记下了话题名", state_store().get(umo).label == "手动话题")
 
-    await collect("/topic off")
+    await collect("/topicweave off")
     check("/topic off 生效", state_store().get(umo).disabled is True)
-    await collect("/topic on")
+    await collect("/topicweave on")
     check("/topic on 生效", state_store().get(umo).disabled is False)
 
-    await collect("/topic forget")
+    await collect("/topicweave forget")
     check("/topic forget 清空话题", state_store().get(umo).label == "")
 
-    unknown = await collect("/topic 胡说八道")
+    unknown = await collect("/topicweave 胡说八道")
     check("未知子命令给用法提示", "用法" in unknown[0])
 
 

@@ -876,9 +876,13 @@ class TopicRouterPlugin(Star):
 
     # ---------------------------------------------------------------- 指令
 
-    @filter.command("topic")
+    @filter.command("topicweave", alias={"话题织机", "topicrouter"})
     async def command_topic_v017(self, *args: Any, **kwargs: Any):
         """查看/管理当前会话的话题状态。
+
+        指令名为什么是 `topicweave` 而不是 `topic`：`topic` 太通用，AstrBot 的
+        「检测到指令冲突」会把它和别的插件判成同一指令、导致一次触发多个插件响应。
+        这里用一个不会撞的名字，并给两个别名方便输入。
 
         Args:
             *args: 派发方给的位置参数（通常就是事件）。
@@ -892,7 +896,9 @@ class TopicRouterPlugin(Star):
         try:
             result = await _topic_status(_ctx(), event)
         except Exception as exc:  # noqa: BLE001
-            logger.error(f"[{PLUGIN_NAME}] /topic 执行失败: {exc}", exc_info=True)
+            logger.error(
+                f"[{PLUGIN_NAME}] /topicweave 执行失败: {exc}", exc_info=True
+            )
             return
         yield event.plain_result(result)
 
@@ -1006,8 +1012,9 @@ async def _topic_status(ctx: Context | None, event: Any) -> str:
         return "本会话已开启话题自动判断。"
 
     return (
-        "用法：/topic 查看状态；/topic new [名称] 手动翻篇；"
-        "/topic forget 忘记当前话题；/topic off|on 本会话开关。"
+        "用法：/topicweave 查看状态；/topicweave new [名称] 手动翻篇；"
+        "/topicweave forget 忘记当前话题；/topicweave off|on 本会话开关。"
+        "（别名：主题织机 / topicrouter）"
     )
 
 

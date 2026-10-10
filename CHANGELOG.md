@@ -1,5 +1,13 @@
 # 更新日志
 
+## v0.1.9
+
+- **改：指令名 `/topic` → `/topicweave`**（别名 `话题织机`、`topicrouter`）。
+  AstrBot 的「检测到指令冲突」把 `/topic` 和别的插件判成了同一指令，一次触发会让
+  多个插件同时响应。`topic` 太通用，换成不会撞的名字；两个别名方便输入。
+- `/topicweave` 的用法与之前完全一致：`/topicweave`、`/topicweave new [名称]`、
+  `/topicweave forget`、`/topicweave off|on`。
+
 ## v0.1.8
 
 **架构修正：状态与逻辑从 `self` 搬到模块级——这是本插件能在这个环境跑起来的关键。**

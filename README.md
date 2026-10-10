@@ -134,10 +134,10 @@ FileNotFoundError: [Errno 2] No such file or directory:
 
 | 指令 | 作用 |
 | --- | --- |
-| `/topic` | 查看当前话题、轮数、本小时判定次数、开关状态 |
-| `/topic new [名称]` | 手动翻篇：新建对话并重置话题（等于 `/new` + 重置状态） |
-| `/topic forget` | 忘记当前话题，下一条消息重新建档 |
-| `/topic off` / `/topic on` | 关掉 / 打开**本会话**的自动判断 |
+| `/topicweave` | 查看当前话题、轮数、本小时判定次数、开关状态 |
+| `/topicweave new [名称]` | 手动翻篇：新建对话并重置话题（等于 `/new` + 重置状态） |
+| `/topicweave forget` | 忘记当前话题，下一条消息重新建档 |
+| `/topicweave off` / `/topicweave on` | 关掉 / 打开**本会话**的自动判断 |
 
 ## 配置项
 
@@ -178,7 +178,7 @@ FileNotFoundError: [Errno 2] No such file or directory:
 
    接着追问同一件事，应出现 `CONTINUE`。
 
-3. `/topic` 能看到话题名、轮数和本小时判定次数。
+3. `/topicweave` 能看到话题名、轮数和本小时判定次数。
 
 状态文件在 `<AstrBot数据目录>/plugin_data/astrbot_plugin_topic_router/topic_state.json`，
 里面每个会话一条记录，直接删掉就等于全部重置。
@@ -226,7 +226,7 @@ $env:PYTHONPATH = "$env:LOCALAPPDATA\AstrBot\backend\app;$env:USERPROFILE\.astrb
 
 - `run_tests.py` 覆盖：按 AstrBot 的加载规则导入插件、metadata/schema 合法性、启发式打分、
   模型输出解析、mark/hint/auto 三种模式、对话切换后的状态作废、每小时上限、模型异常与超时、
-  `/topic` 指令全部分支。
+  `/topicweave` 指令全部分支。
 - `verify_zip_install.py` 用 AstrBot **v4.28.1 的官方解包代码**（`zip_updater.py` 的
   `_resolve_archive_root_dir` / `_finalize_extracted_archive`），把模块内的 `os` 换成
   POSIX 路径语义替身，在 Windows 上复现 NAS（Linux）的行为：坏包必然报错、当前交付包
