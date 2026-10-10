@@ -1,16 +1,23 @@
 """离线测试：不启动 AstrBot，用假 context/event 跑通判定与动作层。
 
-跑法（用 AstrBot 自带的 Python 运行时，才能 import 到真实的 astrbot 模块）：
+跑法（需要用 AstrBot 自带的 Python 运行时，才能 import 到真实的 astrbot 模块）：
 
+    # Windows（AstrBot 桌面版）
     & "$env:LOCALAPPDATA\\AstrBot\\backend\\python\\python.exe" tests/run_tests.py
+
+    # Linux / macOS（用装了 astrbot 的解释器；桌面版在 ~/.astrbot 下）
+    python3 tests/run_tests.py
+
+不想装 AstrBot 也能验证核心逻辑与两种 handler 契约：
+`python3 tests/test_portability.py`（用桩模块，任意 Python 3.10+ 可跑）。
 
 它做四件事：
 1. 按 AstrBot 真实的加载方式（`data.plugins.<目录名>.main`）导入插件，验证相对导入、
    `metadata.yaml`、`_conf_schema.json` 都是 AstrBot 认的格式；
 2. 用真实 `ProviderRequest` / `TextPart` 对象跑 mark / hint / auto 三种模式；
-3. 覆盖两个入口的组合：消息事件（主判定）与 LLM 请求钩子（可选的请求改写）、
+3. 覆盖两个入口的组合：消息事件（主判定）与请求钩子（可选的请求改写）、
    同一条消息重复到达时的去重；
-4. 覆盖状态作废、每小时上限、置信度门槛、模型异常/超时、`/topic` 指令等边界。
+4. 覆盖状态作废、每小时上限、置信度门槛、模型异常/超时、`/topicweave` 指令等边界。
 """
 
 from __future__ import annotations

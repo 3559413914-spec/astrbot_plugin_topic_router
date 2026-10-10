@@ -26,6 +26,8 @@ import sys
 import tempfile
 import types
 from pathlib import Path
+
+# 用桩模块隔开 AstrBot 依赖后，本测试只需要标准库 —— 但也无所谓，先按需引入。
 from types import SimpleNamespace
 
 HERE = Path(__file__).resolve().parent

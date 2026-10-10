@@ -1,152 +1,324 @@
-# astrbot_plugin_topic_router
+# 话题路由器 · Topic Router
 
-让机器人自己判断用户这句话是**接着上一个话题**，还是**开了新话题**。
+> 让机器人自己判断用户这句话是**接着上一个话题**，还是**开了新话题**。
 
-它挂在 AstrBot 的**消息事件**上（判定主入口），每条要发给模型的用户消息都会先过一遍
-判定，然后按你选定的模式行动。默认模式是 **mark**：只记录、只更新状态，**绝不改上下文**。
+AstrBot 的对话是一整条上下文。当用户在同一个会话里从"帮我画个电路板"跳到"顺便看看 NAS 硬盘"
+时，模型会把两件事混在一起回答；等到上下文攒到 50 条被压缩，话题边界就彻底糊了。
 
-## 谁能用 / 使用条件
+这个插件在每条用户消息到达时做一次轻量判定，输出「延续 / 新话题」+ 置信度，然后按你选的
+模式行动。**默认只记录，不改任何上下文**——先看几天它判得准不准，再决定要不要自动翻篇。
 
-这是一个标准的 AstrBot 插件包，**任何人都可以装**：代码是自包含的（无第三方依赖、
-无外部服务），License 是 MIT，不绑定任何账号、也不含任何密钥。
+```
+[话题路由器] NEW-TOPIC | webchat:... | confidence=0.90 | source=llm | topic=硬盘扩容 | ...
+[话题路由器] CONTINUE  | webchat:... | confidence=0.95 | source=heuristic | topic=电路板设计 | ...
+```
 
-装之前确认这几条：
-
-| 条件 | 说明 |
+| | |
 | --- | --- |
-| AstrBot ≥ 4.24 | 用到了 `TextPart.mark_as_temp`（4.24+）；`hint` 模式才会用到它，`mark` 模式不受影响 |
-| 内置 Agent Runner | `provider_settings.agent_runner_type` 必须是 `local`。切到 Dify / Coze / DashScope / DeerFlow 时钩子不触发，插件会静默不工作 |
-| 一个可用的 LLM Provider | 判定要调用一次模型（默认用你配的 provider，可指定更便宜的）。不配也能跑，只是退化成纯启发式 |
-| 能改插件配置 | 需要在 WebUI 的插件配置里填 `provider_id` 等 |
+| 适用 | AstrBot ≥ 4.24（v4.x） |
+| 依赖 | **零第三方依赖**（纯标准库） |
+| 许可 | MIT |
+| 模式 | `off` / `mark`（默认）/ `hint` / `auto` |
+| 指令 | `/topicweave`（别名 `话题织机`） |
 
-**兼容性说明**：`mark` / `hint` / `auto` 三种模式与 AstrBot 的两种 handler 派发契约都
-兼容——不论注册表里存的是**绑定方法**（标准行为）还是**未绑定函数**（少数环境会出现），
-插件都用模块级 handler + `isinstance` 自认参数来处理。`tests/test_portability.py`
-专门验证这两种契约，任何人都能离线跑。
+---
 
-## 为什么默认不自动切
+## 目录
 
-话题判定误判的代价是不对称的：
+- [它能做什么](#它能做什么)
+- [安装：先选你的部署方式](#安装先选你的部署方式)
+  - [方式 A：WebUI 上传（所有平台通用，推荐）](#方式-awebui-上传所有平台通用推荐)
+  - [方式 B：Docker 部署的 AstrBot](#方式-bdocker-部署的-astrbot)
+  - [方式 C：Windows 桌面客户端](#方式-cwindows-桌面客户端)
+  - [方式 D：飞牛 NAS（fnOS）](#方式-d飞牛-nasfnos)
+  - [方式 E：macOS / Linux 源码部署](#方式-emacos--linux-源码部署)
+- [装完之后的配置](#装完之后的配置)
+- [验证它真的在工作](#验证它真的在工作)
+- [使用条件与边界](#使用条件与边界)
+- [配置项](#配置项)
+- [指令](#指令)
+- [排错](#排错)
+- [开发与测试](#开发与测试)
+
+---
+
+## 它能做什么
+
+**四种模式，按侵入性从小到大：**
+
+| mode | 行为 | 适合 |
+| --- | --- | --- |
+| `off` | 完全不判定 | 临时关掉 |
+| `mark` | **默认**。只写日志、维护话题状态，请求一个字都不改 | 先跑这个，观察准确率 |
+| `hint` | 额外往本轮注入一段临时提示（不进历史），告诉模型"已换话题" | 不想换对话，但想让模型别串味 |
+| `auto` | 置信度 ≥ `auto_threshold` 时新建一个对话并切过去，旧对话完整留档 | 确认判定准了再开 |
+
+`auto` 做的事和用户手打 `/new` 完全等价：旧对话不删、随时能用 `/ls` `/switch` 切回去，
+区别只是由插件在后台完成，并给群里回一句提示（可用 `new_conversation_notice` 关掉）。
+
+**为什么默认不自动切？** 因为误判的代价不对称：
 
 - 把「延续」误判成「延续」→ 没损失；
 - 把「延续」误判成「新话题」→ 会把用户正在聊的上下文切走，用户会觉得机器人失忆了。
 
-所以插件的默认姿势是「先观察，后行动」：先跑几天 `mark`，看日志里的判定准不准，
-再把 `mode` 改成 `auto`。
+所以插件的默认姿势是「先观察，后行动」。
 
-## 四种模式
+**判定分两层，省钱：**
 
-| mode | 行为 | 建议 |
+1. **零成本启发式**（每条消息都跑）：与当前话题的字符相似度、承接词（继续/还有/那个）、
+   显式换话题词（换个话题/顺便问）、时间间隔、消息长度；
+2. **模型判定**（只在模糊区间才调用一次便宜模型，默认 `deepseek/deepseek-v4-flash`）。
+
+模型说错话、超时、报错**一律按「延续」处理**——判定失败绝不影响正常回复。
+
+---
+
+## 安装：先选你的部署方式
+
+不管你用哪种方式跑 AstrBot，插件最终都装在同一个地方：
+
+| 部署方式 | AstrBot 数据目录 | 插件目录 |
 | --- | --- | --- |
-| `off` | 完全不判定 | 临时关掉 |
-| `mark` | **默认**。只写日志、维护话题状态，请求一个字都不改 | 先跑这个 |
-| `hint` | 额外往本轮注入一段临时提示（不进历史），告诉模型"已换话题" | 不想换对话、但想让模型别串味 |
-| `auto` | 置信度 ≥ `auto_threshold` 时新建一个对话并切过去，旧对话完整留档 | 确认判定准了再开 |
+| Docker | 容器内 `/AstrBot/data`（你挂载的宿主机目录） | `/AstrBot/data/plugins/` |
+| 桌面客户端 | `~/.astrbot/data` | `~/.astrbot/data/plugins/` |
+| 源码 / CLI | `<启动目录>/data`（可用 `ASTRBOT_ROOT` 改） | `<启动目录>/data/plugins/` |
+| 飞牛 NAS 应用 | 应用数据目录（fnOS 里是 `/vol1/@appdata/astrbot/data`） | 同上 `plugins/` |
 
-`auto` 做的事和用户手打 `/new` 等价：旧对话不删、随时可以用 `/ls` `/switch` 切回去。
-区别只是由插件在后台完成，并且给群里回一句提示（可用 `new_conversation_notice` 关掉）。
+> Windows 的 `~` 是 `C:\Users\<你的用户名>`；macOS / Linux 的 `~` 是 `/Users/<你>`、
+> `/home/<你>`。
 
-## 安装（飞牛 NAS）
+**装完生效方式**：WebUI 上传安装会**自动加载**，一般不需要重启；升级已装的版本时，
+建议**重启一次 AstrBot 进程**（原因见 [排错](#排错)：热重载不会清掉内存里的旧注册项）。
 
-1. 打开 `http://<你的NAS地址>:6185` → `插件` → `安装插件` → `从文件安装`；
-2. 上传桌面上的 `astrbot_plugin_topic_router-0.1.0.zip`（用 `build_zip.py` 打的包）；3. 上传后 AstrBot 会自动解包、注册并加载（装好后在插件列表里能看到它）；
-4. 进 `插件配置` 确认这几项：
-   - `mode` 保持 `mark`；
-   - `provider_id` 填一个便宜的模型，比如 `deepseek/deepseek-v4-flash`；
-   - `debug_log` 打开。
+---
 
-也可以直接把插件目录丢进 NAS 的 `AstrBot/data/plugins/` 下再重启。
+### 方式 A：WebUI 上传（所有平台通用，推荐）
 
-### 打包必须用 `build_zip.py`，不要用系统自带压缩
+不需要碰命令行、不需要进容器，**所有部署方式都适用**。
+
+1. 打开 AstrBot 管理面板（默认 `http://<你的IP>:6185`，Docker 部署时**不能用 localhost**）；
+2. 左侧进 **插件 → 插件**（地址是 `/extension/plugins`）；
+3. 右上角 **安装插件 → 从文件安装**，选择 `astrbot_plugin_topic_router-<版本>.zip`；
+4. 等日志出现 `Installed plugin astrbot_plugin_topic_router-... successfully.`；
+5. 在插件列表里确认它已**启用**，然后进 **插件配置** 填 `provider_id`（见下一节）。
+
+也可以在 **插件市场** 里搜名字安装（如果它已上架）。
+
+> ⚠️ **不要用系统自带的"压缩文件夹"重新打包**。Windows 的压缩工具会写反斜杠条目名，
+> 装到 Linux 上的 AstrBot 会直接失败（`FileNotFoundError`）。要自己打包请用仓库里的
+> `python build_zip.py`，详见 [README 末尾](#自己打包)。
+
+---
+
+### 方式 B：Docker 部署的 AstrBot
+
+官方镜像 `soulter/astrbot`，数据卷挂到容器内 `/AstrBot/data`。
+
+**B1. 用 WebUI 上传（推荐）**：直接照 [方式 A](#方式-awebui-上传所有平台通用推荐) 走，
+宿主机不需要任何操作。
+
+**B2. 手动把插件目录拷进容器**：
+
+```bash
+# 1) 看容器名（官方示例里叫 astrbot）
+docker ps
+
+# 2) 把解压出来的插件目录拷进去
+docker cp astrbot_plugin_topic_router <容器名>:/AstrBot/data/plugins/
+
+# 3) 重启容器让它加载
+docker restart <容器名>
+
+# 4) 看日志确认加载
+docker logs -f <容器名> | grep -i topic
+```
+
+**B3. 直接在宿主机放（不用进容器）**：因为 `/AstrBot/data` 就是挂载点，找到你启动容器时
+`-v` 的那一侧目录，把插件目录放进去即可：
+
+```bash
+# 例如启动命令是 -v $PWD/data:/AstrBot/data
+cp -r astrbot_plugin_topic_router ./data/plugins/
+docker restart <容器名>
+```
+
+**Docker Compose 用户**：`compose.yml` 里 `volumes:` 写的宿主机路径就是上面那个目录。
+国内网络拉不动镜像时，官方给的办法是把 `image: soulter/astrbot:latest` 换成
+`m.daocloud.io/docker.io/soulter/astrbot:latest`。
+
+**群晖 / 威联通 / Unraid / CasaOS / 1Panel**：本质都是"找到映射到 `/AstrBot/data` 的宿主机
+目录 → 把插件目录放进 `plugins/` → 重启容器"。图形界面里找"容器 → 详情 → 卷/存储"就能看到映射。
+
+---
+
+### 方式 C：Windows 桌面客户端
+
+[AstrBot-desktop](https://github.com/AstrBotDevs/AstrBot-desktop) 支持 Windows / macOS / Linux，
+下载对应安装包（`.exe` / `.dmg` / `.deb` / `.rpm`）装完启动即可，数据在 `~/.astrbot`。
+
+**C1. WebUI 上传（推荐）**：桌面客户端自带管理面板，按 [方式 A](#方式-awebui-上传所有平台通用推荐)
+操作。
+
+**C2. 直接放目录**：
+
+1. 完全退出 AstrBot 桌面客户端（托盘图标也要退出）；
+2. 把 `astrbot_plugin_topic_router` 整个目录复制到：
+   ```
+   C:\Users\<你的用户名>\.astrbot\data\plugins\
+   ```
+   最终结构必须是 `.astrbot\data\plugins\astrbot_plugin_topic_router\metadata.yaml`；
+3. 重新启动客户端。
+
+**C3. 只想在本地试一下、不启动 AstrBot**：仓库的 `tests/test_portability.py` 用桩模块跑，
+任意 Python 3.10+ 都能执行，用来确认插件逻辑本身没问题：
 
 ```powershell
-python build_zip.py          # 输出到桌面：astrbot_plugin_topic_router-<版本>.zip
+python tests\test_portability.py
 ```
 
-> 包内目录名固定是 `astrbot_plugin_topic_router/`（AstrBot 认 metadata.yaml 里的 `name`，
-> 与压缩包文件名无关）。
+---
 
-**这不是洁癖，是硬要求。** 在 Windows 上用资源管理器「发送到 → 压缩文件夹」或
-`Compress-Archive` 打这个包，装到 NAS（Linux）上会直接失败：
+### 方式 D：飞牛 NAS（fnOS）
 
-```
-FileNotFoundError: [Errno 2] No such file or directory:
-  '/tmp/.astrbot/.plugin-upload-xxx/plugin/astrbot_plugin_topic_router'
-```
+fnOS 上 AstrBot 通常以"应用"形式运行，数据目录在应用私有目录里（本插件实测环境为
+`/vol1/@appdata/astrbot/data`）。**优先走 WebUI 上传**，这样不需要 SSH：
 
-原因有两层：
+1. 浏览器打开 `http://<NAS 的 IP>:6185` → 用管理员账号登录（默认用户名 `astrbot`）；
+2. **插件 → 插件 → 安装插件 → 从文件安装** → 上传 zip；
+3. 在 **插件配置** 里填 `provider_id`，保存；
+4. 如果日志里没有出现 `模块已导入 <版本>`，去 fnOS 的**应用面板把 AstrBot 停止再启动**
+   （或在 SSH 里 `docker restart <容器名>`）。fnOS 的 AstrBot 一般是容器化的，
+   重启应用 = 重启容器。
 
-1. **分隔符**：Windows 的压缩工具用反斜杠写条目名。Linux 上反斜杠是**合法的文件名
-   字符**，不是路径分隔符，`os.path.normpath` 不会规范化它，于是解包后根本得不到
-   `astrbot_plugin_topic_router/` 这个目录；
-2. **缺目录条目**：Windows 压缩工具通常只写文件条目、不写目录条目。AstrBot 的
-   `_resolve_archive_root_dir` 仍然能从文件条目推断出根目录名（父路径就是包名），
-   但解包时没有任何条目让 `extractall` 去**创建**这层目录，收尾步骤
-   `os.listdir(<target>/<包名>)` 就抛了上面那个错。
+**想手动放文件（需要能访问应用数据目录）**：
 
-`build_zip.py` 做的正是这两件事：条目名一律正斜杠，且显式写入 `包名/` 目录条目。
-另外它**不包含 `tests/`**：包里一旦有子目录，AstrBot 推断出的根目录会退化成整个
-目标目录，收尾时会发生"把目录往它自己里面搬"的错乱。
-
-> `tests/verify_zip_install.py` 会用 AstrBot v4.28.1 的官方代码、在 POSIX 路径语义下
-> 把这个流程整条跑一遍：既验证当前交付包能装成功，也验证"反斜杠 / 缺目录条目"确实
-> 会复现上面那个报错。
-
-## 它挂在哪里（v0.1.4 起）
-
-判定由**消息事件**驱动：`@filter.event_message_type(EventMessageType.ALL)`。
-
-为什么不用 `on_llm_request` 当主入口：AstrBot 的 handler 注册表用
-`f"{模块}_{函数名}"` 当键（4.28.1 `core/star/register/star_handler.py:38`），
-**键里不含插件版本**，命中已有条目时直接复用旧元数据。于是只要方法还叫
-`on_llm_request`，卸载重装后命中的仍是**第一次安装**留下的那条记录——里面存着旧版
-函数对象，新代码永远不会被调用（实机表现：函数入口日志一次不出现，却报旧签名的
-`TypeError: ... missing 1 required positional argument: 'req'`）。消息事件的调用约定
-是确定的（永远只传 `event`），所以判定、状态、日志都由它驱动。
-
-请求钩子仍然保留，但做了三件事：
-
-1. 降级为**可选增强**：只在能拿到 `ProviderRequest` 时执行 `hint` / `auto` 的请求
-   改写；默认的 `mark` 模式完全不依赖它；
-2. **方法名带版本号**（`hook_llm_request_v016`）：换个从未注册过的名字，才不会命中
-   旧条目。改这个方法名时请务必同时改版本号，否则会退回"复用旧函数"的状态；
-3. **不依赖 `self` 绑定、也不依赖参数名**：实机日志显示这个钩子被调用时第一个位置
-   参数是事件对象（`self` 被绑成了 `WebChatMessageEvent`），所以函数里用
-   `*args/**kwargs` 接住一切、自己按类型认出事件与请求，并且整个方法体有总兜底——
-   任何异常只记一行 warning，不刷 traceback（它只是可选增强，不该影响主流程）。
-
-两个入口可能针对同一条消息先后触发，所以做了去重：键是平台的
-`message_id + timestamp`（拿不到时才退回正文），因此**用户真的重发同一句话仍然
-算新的一轮**，只有同一条消息被重复投递才会跳过。
-
-## 它怎么判定：两层
-
-**第一层，零成本启发式**（每条消息都跑）：
-
-- 与「话题名称 + 话题摘要 + 上一条消息」的字符 2-gram 相似度；
-- 承接词 / 回指词（继续、还有、那个、它…）；
-- 显式换话题词（换个话题、顺便问、另一个问题…）；
-- 距上一条消息的时间间隔（冷启动）；
-- 消息长度（「嗯」「好的」「继续」这类短消息永远算延续）。
-
-**第二层，模型判定**（只在以下情况才花钱）：
-
-- 启发式落在模糊区间（相似度介于 `sim_new_topic` 和 `sim_continue` 之间）；
-- 会话里第一次出现话题；
-- 或者你打开了 `always_llm`。
-
-模型用一次单轮调用，要求返回：
-
-```json
-{"verdict":"continue|new_topic","confidence":0.0-1.0,
- "topic_name":"当前话题的简短名称","topic_summary":"一句话说明",
- "reason":"不超过30字的理由"}
+```bash
+# 通过 SSH 登录 NAS 后
+# 1) 上传 zip 到任意目录，先解压
+unzip astrbot_plugin_topic_router-*.zip -d /tmp/
+# 2) 放进插件目录（注意目录名必须保持 astrbot_plugin_topic_router）
+cp -r /tmp/astrbot_plugin_topic_router /vol1/@appdata/astrbot/data/plugins/
+# 3) 确认结构正确
+ls /vol1/@appdata/astrbot/data/plugins/astrbot_plugin_topic_router/metadata.yaml
+# 4) 重启 AstrBot 应用（fnOS 面板里停止→启动，或 docker restart）
 ```
 
-解析失败、超时、报错**一律按「延续」处理** —— 判定失败不能影响正常回复。
+> 权限提醒：`/vol1/@appdata/...` 属于应用私有目录，某些 fnOS 版本需要 root 或 sudo 才能写入。
+> 如果文件管理器进不去，就用 WebUI 上传，没必要为装插件去改权限。
 
-合并两个信号时是不对称的：只有两边都指向新话题、且置信度够高，才会真的判新话题；
-模型半信半疑时一律退回延续。
+**升级/重装注意**：插件本体在 `data/plugins/` 里，属于应用数据的一部分。常规升级 AstrBot 应用
+不会动它，但**卸载应用时如果勾选了"同时删除数据"就会丢**。建议定期备份整个
+`data/plugins/` 与 `data/plugin_data/` 目录——后者存着本插件的话题状态
+（`plugin_data/astrbot_plugin_topic_router/topic_state.json`）。
+
+---
+
+### 方式 E：macOS / Linux 源码部署
+
+按照官方 [手动部署](https://docs.astrbot.app/deploy/astrbot/cli.html)：
+
+```bash
+git clone https://github.com/AstrBotDevs/AstrBot
+cd AstrBot
+uv sync          # 或 pip install -r requirements.txt
+uv run main.py   # 启动；数据目录就是当前目录下的 data/
+```
+
+然后：
+
+```bash
+# 把插件放进数据目录（注意：这里是 <AstrBot 启动目录>/data，不是 ~/.astrbot）
+cp -r astrbot_plugin_topic_router ./data/plugins/
+# 重启 AstrBot
+```
+
+源码部署时数据目录跟随**启动时的工作目录**，想固定位置可以设环境变量：
+
+```bash
+export ASTRBOT_ROOT=/opt/astrbot      # 之后数据都在 /opt/astrbot/data
+```
+
+---
+
+## 装完之后的配置
+
+进 **插件 → 插件配置 → 话题路由器**，至少确认这三项：
+
+| 配置 | 建议值 | 说明 |
+| --- | --- | --- |
+| `mode` | `mark` | 先观察。确认判定准确后再考虑 `auto` |
+| `provider_id` | `deepseek/deepseek-v4-flash` | 判定用的模型，格式 `provider_source_id/model`；**填错不影响回复**，只是判定失败 |
+| `debug_log` | 打开 | 不然日志里看不到判定结果 |
+
+**不知道 `provider_id` 填什么？** 插件每次加载都会把可用的模型 ID 打进日志，抄一个即可：
+
+```
+[话题路由器] 可用的模型 ID（可直接填进 provider_id）：deepseek/deepseek-v4-flash、...
+```
+
+> 判定用的模型和你聊天用的模型是分开的。用便宜的快模型即可，成本可以忽略（每轮最多
+> 一次单轮调用，且只有启发式拿不准时才触发）。
+
+---
+
+## 验证它真的在工作
+
+发一句话给机器人，然后在 AstrBot 日志里找这两行：
+
+```
+[话题路由器] handle_message_v017 被调用 | vX.Y.Z | umo=... | msg='你好' | stopped=False
+[话题路由器] NEW-TOPIC | webchat:... | confidence=0.90 | source=llm | topic=... | ...
+```
+
+再发一句**接着刚才话题**的话，第二行应该变成 `CONTINUE`。
+
+也可以用指令自查：发给机器人 `/topicweave`，会回一份当前话题状态。
+
+---
+
+## 使用条件与边界
+
+| 条件 | 说明 |
+| --- | --- |
+| AstrBot ≥ 4.24 | 只用到 `TextPart.mark_as_temp`（4.24+），且**仅 `hint` 模式**需要；`mark` 模式不受版本影响 |
+| **内置 Agent Runner** | `provider_settings.agent_runner_type` 必须是 `local`。切到 Dify / Coze / DashScope / DeerFlow 时钩子不触发，插件静默不工作 |
+| 一个可用的 LLM Provider | 判定要一次模型调用（可指定便宜模型）。不配也能跑，退化成纯启发式 |
+| 平台无关 | QQ / 微信 / Telegram / Discord / WebChat 等所有平台都适用，只要消息能到达 LLM |
+
+**已知边界：**
+
+- **相似度是字面级的**：中文用字符 2-gram，同义改写的相似度会偏低，这类情况靠模型判定兜住；
+- **判定会占用一点时间**：只有需要问模型的那一轮会多等一次单轮调用（约几百毫秒），
+  其余轮次是纯本地计算；
+- **状态按会话（UMO）隔离**：群聊里开 `unique_session` 时每个人是独立会话，互不干扰；
+- **插件不会删除任何对话**：`auto` 只新建对话，旧对话完整保留。
+
+---
+
+## 配置项
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `enabled` | `true` | 总开关 |
+| `mode` | `mark` | 见上文四种模式 |
+| `provider_id` | `deepseek/deepseek-v4-flash` | 判定用模型；留空则跟随当前会话模型 |
+| `auto_threshold` | `0.8` | `auto` 模式自动切换所需置信度 |
+| `min_new_topic_confidence` | `0.6` | 低于它一律当延续，宁可不切 |
+| `always_llm` | `false` | 每轮都问模型（贵，一般不用） |
+| `sim_continue` | `0.5` | 相似度高于它就判延续，不问模型 |
+| `sim_new_topic` | `0.12` | 相似度低于它且无承接词就判新话题 |
+| `time_gap_minutes` | `45` | 冷启动间隔，超过它倾向判新话题 |
+| `min_message_length` | `6` | 短于它的消息（如"嗯""继续"）不判定 |
+| `history_turns` | `3` | 送给判定模型的近期消息条数 |
+| `timeout_seconds` | `8` | 判定模型超时，超时按延续处理 |
+| `max_checks_per_hour` | `30` | 每个会话每小时的模型判定上限（0 不限） |
+| `new_conversation_notice` | `true` | `auto` 切换时是否在群里说一句 |
+| `debug_log` | `true` | 把判定明细写进日志 |
+
+状态文件：`<数据目录>/plugin_data/astrbot_plugin_topic_router/topic_state.json`
+（每个会话一条记录，直接删文件等于全部重置）。
+
+---
 
 ## 指令
 
@@ -156,100 +328,77 @@ FileNotFoundError: [Errno 2] No such file or directory:
 | `/topicweave new [名称]` | 手动翻篇：新建对话并重置话题（等于 `/new` + 重置状态） |
 | `/topicweave forget` | 忘记当前话题，下一条消息重新建档 |
 | `/topicweave off` / `/topicweave on` | 关掉 / 打开**本会话**的自动判断 |
+| `/topicweave conflicts` | 列出当前所有指令冲突（哪个指令被哪几个插件注册） |
 
-## 配置项
+别名：`话题织机`。
 
-| 键 | 默认 | 说明 |
-| --- | --- | --- |
-| `enabled` | `true` | 总开关 |
-| `mode` | `mark` | 见上表 |
-| `provider_id` | `deepseek/deepseek-v4-flash` | 判定用模型，格式 `provider_source_id/model`；留空则跟随当前会话模型 |
-| `auto_threshold` | `0.8` | 自动切换所需置信度 |
-| `min_new_topic_confidence` | `0.6` | 低于它一律当延续，宁可不切 |
-| `always_llm` | `false` | 每轮都问模型（贵，一般不用） |
-| `sim_continue` | `0.5` | 相似度高于它就判延续，不问模型 |
-| `sim_new_topic` | `0.12` | 相似度低于它且无承接词就判新话题 |
-| `time_gap_minutes` | `45` | 冷启动间隔，超过它倾向判新话题 |
-| `min_message_length` | `6` | 短于它的消息不判定 |
-| `history_turns` | `3` | 送给模型的近期消息条数 |
-| `timeout_seconds` | `8` | 判定模型超时，超时按延续 |
-| `max_checks_per_hour` | `30` | 每个会话每小时的模型判定上限（0 不限） |
-| `new_conversation_notice` | `true` | `auto` 切换时是否在群里说一句 |
-| `debug_log` | `true` | 把判定明细写进日志 |
+> 指令名为什么是 `topicweave` 而不是 `topic`：AstrBot 用**实时内存注册表**判定指令冲突，
+> `topic`、`topicrouter` 这类通用英文词很容易和别的插件撞名，撞了会一次触发多个插件。
 
-不知道 `provider_id` 填什么？插件启动时会把可用的模型 ID 全部打进日志，直接抄一个。
-
-## 验证
-
-1. 装好后看 AstrBot 日志里有没有：
-
-   ```
-   [astrbot_plugin_topic_router] 已加载 | 模式 mark | 判定模型 deepseek/deepseek-v4-flash | 状态文件 ...
-   [astrbot_plugin_topic_router] 可用的模型 ID（可直接填进 provider_id）：...
-   ```
-
-2. 在群里发一句和当前话题无关的话，日志里应出现：
-
-   ```
-   [astrbot_plugin_topic_router] NEW-TOPIC | <umo> | confidence=0.90 | source=llm | ...
-   ```
-
-   接着追问同一件事，应出现 `CONTINUE`。
-
-3. `/topicweave` 能看到话题名、轮数和本小时判定次数。
-
-状态文件在 `<AstrBot数据目录>/plugin_data/astrbot_plugin_topic_router/topic_state.json`，
-里面每个会话一条记录，直接删掉就等于全部重置。
+---
 
 ## 排错
 
 | 现象 | 处理 |
 | --- | --- |
-| 安装时报 `FileNotFoundError: .../plugin/astrbot_plugin_topic_router` | 包是用系统压缩工具打的（反斜杠条目名 / 缺目录条目）。用 `python build_zip.py` 重新打包再上传，见上一节 |
-| 日志里出现 `TypeError: on_llm_request() missing 1 required positional argument: 'req'` | 这是 ≤ v0.1.4 的**注册表复用**问题：AstrBot 按"模块+函数名"复用 handler 元数据，卸载重装后命中的是第一次安装留下的旧函数对象。v0.1.5 把钩子改名为 `hook_llm_request_v015` 绕开了它；判定本身自 v0.1.4 起走消息事件，不受影响。先确认日志里有 `模块已导入 v0.1.5` |
-| 装完看不到 `模块已导入 <版本>` | 这份代码没被执行：多半是上传时选到了旧文件（同名不同时间戳）。在插件列表核对版本，必要时卸载 + 重启 AstrBot 再装 |
-| 日志里没有 `已加载` | `on_astrbot_loaded` 在热加载时可能已经错过；改用 `模块已导入` / `实例已构造` 确认加载 |
-| 一直看不到判定日志 | `debug_log` 关了，或 `mode` 是 `off`，或 `enabled` 是 `false` |
-| 判定结果和实际不符，总是判延续 | 看日志里的 `heuristic_confidence`：如果启发式就判了延续，说明 `sim_continue` 太低或 `sim_new_topic` 太高，先调这两个 |
-| `[WARN] 判定模型调用失败` | `provider_id` 写错了或该 provider 不可用；去日志里抄一个可用的 ID |
-| `[WARN] 判定模型超时` | 网络慢或模型慢，把 `timeout_seconds` 调大，或换成更快的模型 |
-| 每轮都被判成新话题 | 说明话题名一直是空的：确认判定模型能正常返回 JSON（关掉思维链模型或换成 flash 这类） |
-| 群聊里每个人都互相干扰 | 本插件按「会话（UMO）」隔离；如果平台开了 `unique_session`，每个人是独立会话，不会互相影响 |
+| 安装时报 `FileNotFoundError: .../plugin/astrbot_plugin_topic_router` | 包是用系统压缩工具打的（反斜杠条目名 / 缺目录条目）。用 `python build_zip.py` 重新打包，或直接用 release 里的包 |
+| 日志里完全没有插件的行 | 插件没装上或被禁用：去 **插件 → 插件** 看列表状态与版本 |
+| 有 `模块已导入` 但没有判定日志 | `mode` 是 `off`、或 `enabled` 是 `false`、或 `debug_log` 关了；也可能是这个会话被 `/topicweave off` 关了 |
+| 判定结果和实际不符，老是判延续 | 看日志里的 `heuristic_confidence`：启发式就判了延续的话，调低 `sim_continue` 或调高 `sim_new_topic` |
+| `[WARN] 判定模型调用失败` | `provider_id` 写错或该 provider 不可用；去日志里抄一个可用的 ID |
+| `[WARN] 判定模型超时` | 网络慢或模型慢：调大 `timeout_seconds`，或换成更快的模型 |
+| 每轮都被判成新话题 | 说明话题名一直是空的：确认判定模型能正常返回 JSON（换成 flash 这类快的、非推理模型） |
+| 升级版本后行为没变 / 报旧版本的错 | **重启 AstrBot 进程**。热重载不会清掉内存注册表里的旧 handler，只有重启才彻底 |
+| 提示"检测到指令冲突" | 发 `/topicweave conflicts` 看是谁跟谁撞了；如果是别的插件之间撞名，跟本插件无关 |
+| 群聊里几个人互相干扰 | 本插件按会话（UMO）隔离；平台开 `unique_session` 后每人独立 |
 
-## 已知边界
+---
 
-- **只在内置 Agent Runner 下生效**：`provider_settings.agent_runner_type` 必须是 `local`。
-  切到 Dify / Coze / DashScope / DeerFlow 时 `on_llm_request` 钩子不触发，插件静默不工作。
-- **钩子的 `req` 参数可能缺席**：官方 4.28.1 的调用点确实把 `ProviderRequest` 传给了
-  `call_event_hook`，但实机运行中这个钩子出现过只传 `event` 的情况（表现为
-  `TypeError: on_llm_request() missing 1 required positional argument: 'req'`）。
-  本插件的 `req` 是**可选参数**，拿不到时会依次尝试 `kwargs["request"]` 和事件
-  extra 里的 `provider_request`；三者都没有时，`mark` 模式照常判定和记录（日志里
-  `has_request: false`），`hint` / `auto` 只记一条 warn 后跳过——不会做半吊子改写。
-- **相似度是字面级的**：中文靠字符 2-gram，同义改写的相似度会偏低，这类情况靠模型判定兜住。
-- **判定会占用一点时间**：只有需要问模型的那一轮会多等一次单轮调用（约几百毫秒），
-  其余轮次是纯本地计算。
-- **状态按会话保存**：同一份 `topic_state.json` 里按 UMO 分条，会话之间不串。
+## 开发与测试
 
-## 离线测试
+四套离线测试，都不需要启动 AstrBot（除了第一套需要 AstrBot 的 Python 环境来 import 真实 API）：
 
-用 AstrBot 自带的 Python 运行时跑（不需要启动 AstrBot，也不会真的调用模型）：
+```bash
+# 1) 插件逻辑：124 项（需要 AstrBot 的 python；桌面版在 ~/.astrbot 之外）
+python tests/run_tests.py
 
-```powershell
-$py = "$env:LOCALAPPDATA\AstrBot\backend\python\python.exe"
-$env:PYTHONPATH = "$env:LOCALAPPDATA\AstrBot\backend\app;$env:USERPROFILE\.astrbot\data\site-packages"
-& $py tests\run_tests.py              # 插件逻辑：90 项
-& $py tests\verify_zip_install.py     # 安装流程：20 项
+# 2) 可移植性：16 项（用桩模块，任意 Python 3.10+）
+python tests/test_portability.py
+
+# 3) 注册表复用复现：9 项（验证 AstrBot 的 handler 注册表行为）
+python tests/reproduce_hook_dispatch.py
+
+# 4) zip 安装流程：21 项（需要 AstrBot v4.28.1 源码，见脚本内提示）
+python tests/verify_zip_install.py
 ```
 
-- `run_tests.py` 覆盖：按 AstrBot 的加载规则导入插件、metadata/schema 合法性、启发式打分、
-  模型输出解析、mark/hint/auto 三种模式、对话切换后的状态作废、每小时上限、模型异常与超时、
-  `/topicweave` 指令全部分支。
-- `verify_zip_install.py` 用 AstrBot **v4.28.1 的官方解包代码**（`zip_updater.py` 的
-  `_resolve_archive_root_dir` / `_finalize_extracted_archive`），把模块内的 `os` 换成
-  POSIX 路径语义替身，在 Windows 上复现 NAS（Linux）的行为：坏包必然报错、当前交付包
-  必然装成功。
+### 自己打包
 
-> Windows 上 `verify_zip_install.py` 的第 [2] 组会 skip：Windows 文件系统不允许文件名
-> 里出现反斜杠，物理上造不出 Linux 那种扁平结果；同一步的分水岭已由 [2b] 的纯逻辑断言
-> 覆盖。把仓库放到 NAS 上跑一次就能走完整分支。
+```bash
+python build_zip.py            # 输出 astrbot_plugin_topic_router-<版本>.zip 到桌面
+```
+
+**必须用这个脚本，不要用系统右键压缩**：Windows 的压缩工具写反斜杠条目名、且不写目录条目，
+Linux 上的 AstrBot 解包后会抛 `FileNotFoundError`；此外它还会把 `tests/` 带进去，导致安装时
+"把目录往自己里面搬"的错乱。
+
+### 代码结构
+
+| 文件 | 作用 |
+| --- | --- |
+| `main.py` / `__init__.py` | 插件入口，只做转出 |
+| `router.py` | handler（模块级）+ 判定流程编排 + 指令 |
+| `detection.py` | 启发式打分、模型提示词、结果解析与合并（纯函数，易测） |
+| `state.py` | 话题状态持久化（按会话分条） |
+| `_conf_schema.json` | WebUI 配置项定义 |
+| `metadata.yaml` | 插件元信息 |
+
+> **给改代码的人**：这个插件的 handler 是**模块级函数**（不是类方法），状态放在模块级
+> `RUNTIME` / `_CTX` 上，方法体里不允许出现 `self.xxx`。原因写在 `router.py` 文件头——
+> 少数环境的 AstrBot 派发 handler 时不绑定实例，`self` 会是事件对象，任何 `self.xxx` 都会抛
+> `AttributeError`，而入口的 `except` 会把它静默吞掉（表现为"插件在跑但什么都不输出"）。
+> 模块级写法对两种派发契约都安全。
+
+## 许可
+
+MIT，见 [LICENSE](LICENSE)。

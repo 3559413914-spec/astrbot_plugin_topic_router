@@ -1,5 +1,24 @@
 # 更新日志
 
+## v0.3.0
+
+**面向所有用户重写文档：不再只讲飞牛 NAS，覆盖各种部署方式。**
+
+- README 重写为使用者视角：开头讲清它能做什么，然后是**五种部署方式**的完整步骤：
+  - 方式 A：WebUI 上传（所有平台通用，推荐）
+  - 方式 B：Docker 部署的 AstrBot（docker cp / 宿主机挂载目录 / 群晖·威联通·CasaOS·1Panel）
+  - 方式 C：Windows 桌面客户端（含 %USERPROFILE%\.astrbot\data\plugins 路径）
+  - 方式 D：飞牛 NAS（fnOS）
+  - 方式 E：macOS / Linux 源码部署（含 ASTRBOT_ROOT）
+- 新增「插件到底装在哪个目录」对照表：Docker 是容器内 /AstrBot/data/plugins（官方 compose
+  的挂载点），桌面版是 ~/.astrbot/data/plugins，源码部署是 <启动目录>/data/plugins。
+- 新增速查：装完怎么配置、怎么验证真的在工作、使用条件与边界、完整配置表、指令表、排错表。
+- metadata.yaml：描述与 help 改为面向使用者的文案，补上 
+epo 地址，help 用多行格式
+  列出全部子指令。
+- 测试脚本去掉剩余的本机绝对路径写法，测试说明同时给出 Windows / Linux-macOS 两种跑法。
+
+
 ## v0.2.2
 
 **可移植性收尾：确认别人也能用。**
