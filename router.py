@@ -876,13 +876,14 @@ class TopicRouterPlugin(Star):
 
     # ---------------------------------------------------------------- 指令
 
-    @filter.command("topicweave", alias={"话题织机", "topicrouter"})
+    @filter.command("topicweave", alias={"话题织机"})
     async def command_topic_v017(self, *args: Any, **kwargs: Any):
         """查看/管理当前会话的话题状态。
 
-        指令名为什么是 `topicweave` 而不是 `topic`：`topic` 太通用，AstrBot 的
-        「检测到指令冲突」会把它和别的插件判成同一指令、导致一次触发多个插件响应。
-        这里用一个不会撞的名字，并给两个别名方便输入。
+        指令名为什么不是 `topic`：`topic` 太通用，AstrBot 的「检测到指令冲突」会把
+        它和别的插件判成同一指令、一次触发多个插件响应。这里用不会撞的名字。
+        别名只留一个**中文长名**（`话题织机`）：`topic` / `topicrouter` 这类英文常用词
+        同样容易与别的插件撞名（实测踩过 `topicrouter`）。
 
         Args:
             *args: 派发方给的位置参数（通常就是事件）。
@@ -1011,11 +1012,71 @@ async def _topic_status(ctx: Context | None, event: Any) -> str:
         store.save()
         return "本会话已开启话题自动判断。"
 
+    if action in {"conflicts", "冲突"}:
+        return _command_conflicts()
+
     return (
         "用法：/topicweave 查看状态；/topicweave new [名称] 手动翻篇；"
-        "/topicweave forget 忘记当前话题；/topicweave off|on 本会话开关。"
-        "（别名：主题织机 / topicrouter）"
+        "/topicweave forget 忘记当前话题；/topicweave off|on 本会话开关；"
+        "/topicweave conflicts 列出指令冲突。"
     )
+
+
+def _command_conflicts() -> str:
+    """列出注册表里所有指令冲突（含是哪个插件注册的）。
+
+    AstrBot 面板会提示"检测到指令冲突"，但不一定方便复制。这个函数直接读内存里的
+    handler 注册表，把冲突双方的**插件名 + 指令名**打出来，便于定位该改谁。
+
+    返回内容同时写进日志（面板提示往往看不到细节）。
+
+    Returns:
+        可读的文本报告。
+    """
+    try:
+        from astrbot.core.star.filter.command import CommandFilter
+        from astrbot.core.star.star import star_map
+        from astrbot.core.star.star_handler import star_handlers_registry
+    except Exception as exc:  # noqa: BLE001
+        return f"无法读取注册表：{exc}"
+
+    groups: dict[str, list[str]] = {}
+    for handler in star_handlers_registry:
+        names: list[str] = []
+        for flt in getattr(handler, "event_filters", []) or []:
+            if isinstance(flt, CommandFilter):
+                base = getattr(flt, "command_name", None) or getattr(
+                    flt, "command", None
+                )
+                if base:
+                    names.append(str(base))
+                for alias in getattr(flt, "alias", None) or []:
+                    names.append(str(alias))
+        if not names:
+            continue
+        module_path = getattr(handler, "handler_module_path", "") or ""
+        meta = star_map.get(module_path)
+        plugin = getattr(meta, "name", None) or module_path
+        for name in names:
+            groups.setdefault(name, []).append(
+                f"{plugin}.{getattr(handler, 'handler_name', '?')}"
+            )
+
+    conflicts = {
+        name: owners
+        for name, owners in groups.items()
+        if len({owner.split(".", 1)[0] for owner in owners}) > 1
+    }
+
+    lines = [f"指令冲突检查（插件 {PLUGIN_VERSION}）"]
+    lines.append(f"注册表里的指令名共 {len(groups)} 个，冲突 {len(conflicts)} 个")
+    if not conflicts:
+        lines.append("当前没有冲突。")
+    for name, owners in sorted(conflicts.items()):
+        lines.append(f"· /{name} ← " + "、".join(sorted(set(owners))))
+    report = "\n".join(lines)
+    logger.info(f"[{PLUGIN_NAME}] {report.replace(chr(10), ' | ')}")
+    return report
 
 
 __all__ = ["PLUGIN_NAME", "PLUGIN_VERSION", "TopicRouterPlugin"]

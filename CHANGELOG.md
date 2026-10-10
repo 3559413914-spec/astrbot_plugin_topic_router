@@ -1,5 +1,16 @@
 # 更新日志
 
+## v0.2.0
+
+- **改：去掉英文别名 	opicrouter**（只留 话题织机）。	opic 和 	opicrouter 都是
+  容易与别的插件撞名的英文常用词；指令冲突是 AstrBot **实时读内存注册表**判定的
+  （command_management._collect_descriptors），撞了就会一次触发多个插件。
+- **新增：/topicweave conflicts** —— 直接读 handler 注册表，把当前所有冲突的
+  「指令名 ← 是哪些插件注册的」列出来并写进日志，方便定位到底该改谁。
+- 说明：面板上如果仍显示 /topic 冲突，那一条**不是本插件当前版本注册的**
+  （v0.1.9 起注册的是 	opicweave）。AstrBot 的卸载/热重载不会清掉内存注册表里的
+  旧条目，**重启进程**后才会消失。
+
 ## v0.1.9
 
 - **改：指令名 `/topic` → `/topicweave`**（别名 `话题织机`、`topicrouter`）。
