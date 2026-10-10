@@ -80,9 +80,16 @@ AstrBot 的对话是一整条上下文。当用户在同一个会话里从"帮�
 | 部署方式 | AstrBot 数据目录 | 插件目录 |
 | --- | --- | --- |
 | Docker | 容器内 `/AstrBot/data`（你挂载的宿主机目录） | `/AstrBot/data/plugins/` |
-| 桌面客户端 | `~/.astrbot/data` | `~/.astrbot/data/plugins/` |
-| 源码 / CLI | `<启动目录>/data`（可用 `ASTRBOT_ROOT` 改） | `<启动目录>/data/plugins/` |
+| 桌面客户端 | Windows `C:\Users\<你>\.astrbot\data`；macOS / Linux `~/.astrbot/data` | 同上 `plugins/` |
+| 一键启动器（新版可视化） | `~/.astrbot_launcher` 下 | 同上 `plugins/` |
+| 一键启动器（旧版 PowerShell 脚本） | 与 `launcher_astrbot_en.bat` 同级的 `AstrBot\data` | 同上 `plugins/` |
+| 源码 / CLI / uv | `<启动目录>/data`（可用 `ASTRBOT_ROOT` 改） | `<启动目录>/data/plugins/` |
 | 飞牛 NAS 原生应用 | 应用私有目录（fnOS 上通常是 `/vol1/@appdata/astrbot/data`） | 同上 `plugins/` |
+
+> 官方文档里"数据目录"的写法不统一（`data/`、`AstrBot/data`、`~/.astrbot`…）。实际规则
+> 只有一条：**根目录 = `ASTRBOT_ROOT` 环境变量 > 桌面打包运行时用 `~/.astrbot` > 其他情况用
+> 当前工作目录**，再拼 `data/`；`data` 下的子路径固定是 `plugins`、`config`、
+> `cmd_config.json`、`plugin_data`、`dist`。找到你的根目录，插件目录就确定了。
 
 > Windows 的 `~` 是 `C:\Users\<你的用户名>`；macOS / Linux 的 `~` 是 `/Users/<你>`、
 > `/home/<你>`。
@@ -107,6 +114,13 @@ AstrBot 的对话是一整条上下文。当用户在同一个会话里从"帮�
 > ⚠️ **不要用系统自带的"压缩文件夹"重新打包**。Windows 的压缩工具会写反斜杠条目名，
 > 装到 Linux 上的 AstrBot 会直接失败（`FileNotFoundError`）。要自己打包请用仓库里的
 > `python build_zip.py`，详见 [README 末尾](#自己打包)。
+>
+> **AstrBot 认可的包结构**（源码核实）：`metadata.yaml`（或 `.yml`）必须在**插件根目录**，
+> 且至少包含非空的 `name` / `desc` / `version` / `author` 四个字段，UTF-8 编码、≤1MB；
+> `name` 必须是合法 Python 标识符（它会变成 `data/plugins/<name>` 目录名）。**外层套一层
+> 目录可以**（AstrBot 会把那层拍平），多层嵌套没有官方承诺。
+> 安装成功后会**立即加载**，一般不需要重启；插件页卡片上的刷新图标是"重载插件"，加载失败
+> 的插件会出现在"加载失败插件"列表里，旁边有"重载"按钮。
 
 ---
 
@@ -142,11 +156,35 @@ cp -r astrbot_plugin_topic_router ./data/plugins/
 docker restart <容器名>
 ```
 
-**Docker Compose 用户**：`compose.yml` 里 `volumes:` 写的宿主机路径就是上面那个目录。
-国内网络拉不动镜像时，官方给的办法是把 `image: soulter/astrbot:latest` 换成
-`m.daocloud.io/docker.io/soulter/astrbot:latest`。
+**官方的 `compose.yml` 长这样**（仓库根目录就有，可直接用）：
 
-**群晖 / 威联通 / Unraid / CasaOS / 1Panel**：本质都是"找到映射到 `/AstrBot/data` 的宿主机
+```yaml
+services:
+  astrbot:
+    image: soulter/astrbot:latest
+    container_name: astrbot
+    restart: always
+    ports:
+      - "6185:6185"   # WebUI
+      - "6199:6199"   # 可选：OneBot v11 / NapCat 反向 WS
+    environment:
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./data:/AstrBot/data
+      - /etc/localtime:/etc/localtime:ro
+```
+
+- `volumes:` 的左边（`./data`）就是宿主机上的那个目录，插件放进它的 `plugins/` 即可；
+- 官方 compose 唯一的环境变量是 `TZ`（IANA 时区，如 `Asia/Shanghai`）；
+- 国内网络拉不动镜像时，把镜像换成 `m.daocloud.io/docker.io/soulter/astrbot:latest`；
+- **代理**：WebUI `设置 → 网络 → 代理与依赖源 → HTTP 代理` 里填的地址是**从容器内部**访问的，
+  所以 `127.0.0.1:7890` 会连到容器自己。宿主机上的代理要写
+  `http://host.docker.internal:7890`（Mac/Windows Docker Desktop）或
+  `http://172.17.0.1:7890`（Linux，docker0 网关）。
+
+**群晖 / 威联通 / Unraid**：官方**没有**专门章节，套用上面的通用 Docker 写法（同样的镜像、端口、`/AstrBot/data` 卷）即可；**CasaOS / 宝塔面板 / 1Panel / Kubernetes** 官方有独立教程。
+
+这些 NAS 面板的本质都是"找到映射到 `/AstrBot/data` 的宿主机
 目录 → 把插件目录放进 `plugins/` → 重启容器"。图形界面里找"容器 → 详情 → 卷/存储"就能看到映射。
 
 ---
@@ -158,6 +196,11 @@ docker restart <容器名>
 
 **C1. WebUI 上传（推荐）**：桌面客户端自带管理面板，按 [方式 A](#方式-awebui-上传所有平台通用推荐)
 操作。
+
+> ⚠️ 桌面客户端的管理面板默认**只监听本机**（`http://127.0.0.1:6185`）。想让别的设备访问，
+> 改 `C:\Users\<你>\.astrbot\data\cmd_config.json` 里的 `dashboard.host` 为 `0.0.0.0`
+> （端口保持 `6185`），完全退出并重启客户端，再从其他设备访问 `http://<本机IP>:6185/`。
+> 也可以用环境变量 `ASTRBOT_DASHBOARD_HOST` / `ASTRBOT_DASHBOARD_PORT` 覆盖（优先级更高）。
 
 **C2. 直接放目录**：
 
@@ -253,12 +296,27 @@ ls /vol1/@appdata/astrbot/data/plugins/astrbot_plugin_topic_router/metadata.yaml
 
 **E1. 手动部署**（官方 [手动部署文档](https://docs.astrbot.app/deploy/astrbot/cli.html)）：
 
+要求 **Python ≥ 3.12**（AstrBot v4 的硬性要求；旧版安装脚本另要求 3.10–3.13，两者不是一回事）。
+
 ```bash
 git clone https://github.com/AstrBotDevs/AstrBot
 cd AstrBot
-uv sync          # 或 pip install -r requirements.txt
-uv run main.py   # 启动；数据目录就是当前目录下的 data/
+uv sync              # 或 pip install -r requirements.txt
+uv run main.py       # 启动；数据目录就是当前目录下的 data/
+# 装了插件之后建议这样启动，避免每次同步依赖：
+uv run --no-sync main.py
 ```
+
+也可以完全不用 clone，用 uv 全局安装（官方 [包管理器部署](https://docs.astrbot.app/deploy/astrbot/package.html)）：
+
+```bash
+uv tool install astrbot --python 3.12
+astrbot init         # 仅首次，会在当前目录创建数据目录与配置
+astrbot run
+```
+
+> 注意：`uv tool` 这种方式**不支持在 WebUI 里升级 AstrBot 版本**，升级要用
+> `uv tool upgrade astrbot --python 3.12`。
 
 然后装插件：
 

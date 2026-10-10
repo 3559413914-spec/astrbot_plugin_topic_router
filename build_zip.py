@@ -17,6 +17,7 @@ AstrBot 的收尾步骤 `_finalize_extracted_archive` 会在 `os.listdir(插件�
 
 from __future__ import annotations
 
+import re
 import sys
 import zipfile
 from pathlib import Path
@@ -73,6 +74,39 @@ def default_output() -> Path:
     return Path.home() / "Desktop" / f"astrbot_plugin_topic_router-{read_version()}.zip"
 
 
+def check_version_consistency() -> list[str]:
+    """检查三处版本信息是否一致。
+
+    版本号曾经漂移过一次：CHANGELOG 写了新版、metadata.yaml 却忘了改，结果打出来的包
+    文件名是新版、包里元数据还是旧版。打包前先自检，把这个坑堵掉。
+
+    Returns:
+        问题描述列表；空列表表示一致。
+    """
+    problems: list[str] = []
+    version = read_version()
+
+    meta_text = (PLUGIN_DIR / "metadata.yaml").read_text(encoding="utf-8")
+    if f"version: v{version}" not in meta_text and f"version: {version}" not in meta_text:
+        problems.append(f"metadata.yaml 里的 version 不是 v{version}")
+
+    changelog = PLUGIN_DIR / "CHANGELOG.md"
+    if changelog.is_file():
+        if f"## v{version}" not in changelog.read_text(encoding="utf-8"):
+            problems.append(f"CHANGELOG.md 顶部没有 ## v{version} 小节")
+
+    readme = PLUGIN_DIR / "README.md"
+    if readme.is_file():
+        text = readme.read_text(encoding="utf-8")
+        # 只挑"本插件的版本号"来比：README 里还会提到 AstrBot 自身的版本（如 v4.28.1），
+        # 那些不能算不一致。约定写法是「话题路由器 vX.Y.Z」或「插件 vX.Y.Z」。
+        for found in set(re.findall(r"(?:话题路由器|插件)\s*v(\d+\.\d+\.\d+)", text)):
+            if found != version:
+                problems.append(f"README.md 里出现了本插件的其它版本号 v{found}")
+                break
+    return problems
+
+
 def build(output: Path) -> Path:
     """写出 zip。
 
@@ -86,6 +120,12 @@ def build(output: Path) -> Path:
     missing = [name for name in INCLUDE_FILES if not (PLUGIN_DIR / name).is_file()]
     if missing:
         raise SystemExit(f"缺少文件，无法打包：{', '.join(missing)}")
+
+    problems = check_version_consistency()
+    if problems:
+        raise SystemExit(
+            "版本信息不一致，先改齐再打包：\n  - " + "\n  - ".join(problems)
+        )
 
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         # 目录条目是必需的：AstrBot 靠它 + 子条目前缀来推断"压缩包里的根目录"，

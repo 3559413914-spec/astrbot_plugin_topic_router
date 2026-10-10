@@ -1,5 +1,29 @@
 # 更新日志
 
+## v0.3.2
+
+**按官方文档与源码核实，修正部署文档里几处不准的说法。**
+
+- **数据目录口径统一**：官方文档对"数据目录"的写法不统一（`data/`、`AstrBot/data`、
+  `~/.astrbot`…）。实际规则只有一条：根目录 = `ASTRBOT_ROOT` 环境变量 > 桌面打包运行时
+  `~/.astrbot` > 其他情况**当前工作目录**，再拼 `data/`。目录表据此补齐了
+  **一键启动器的两种数据位置**（新版可视化在 `~/.astrbot_launcher`，旧版 PowerShell
+  脚本在与 `.bat` 同级目录）。
+- **桌面客户端默认只监听本机**：WebUI 是 `127.0.0.1:6185`，要让别的设备访问得改
+  `cmd_config.json` 的 `dashboard.host` 为 `0.0.0.0`（或用 `ASTRBOT_DASHBOARD_HOST`）。
+- **Python 要求写准**：AstrBot v4 要求 **Python ≥ 3.12**（旧版安装脚本的 3.10–3.13 是脚本
+  自身要求，不是 AstrBot 的要求）；补上 `uv run --no-sync main.py` 与 `uv tool install
+  astrbot` 两种官方装法及其限制（uv tool 方式不能在 WebUI 里升级版本）。
+- **Docker 补全**：贴出官方 `compose.yml` 要点（唯一环境变量是 `TZ`、6185/6199 两个端口、
+  `./data:/AstrBot/data`）；补上容器内代理该怎么写（`host.docker.internal` / docker0 网关）；
+  说明群晖·威联通官方没有专章，CasaOS·宝塔·1Panel·K8s 有。
+- **zip 规则按源码写精确**：`metadata.yaml` 必须在根目录、四个必填字段、UTF-8、≤1MB、
+  `name` 必须是合法 Python 标识符；**外层套一层目录可以，多层没有官方承诺**；
+  安装后立即加载，不需要重启。
+- 修正上一版 fnOS 章节（见 v0.3.1）：该环境是 fnOS **原生应用**而非 Docker，重启方式不同。
+
+## v0.3.1
+
 ## v0.3.0
 
 **面向所有用户重写文档：不再只讲飞牛 NAS，覆盖各种部署方式。**
