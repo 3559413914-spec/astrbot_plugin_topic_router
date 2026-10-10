@@ -1,5 +1,34 @@
 # 更新日志
 
+## v0.2.1
+
+**根治：所有 handler 改成模块级函数、不声明 self。**
+
+实机重启后的纯信号日志（僵尸条目已清空，只剩真相）：
+
+`
+core.core_lifecycle:372  hook(on_astrbot_loaded) -> None - on_loaded_v017
+TypeError: TopicRouterPlugin.on_loaded_v017() missing 1 required positional argument: 'self'
+`
+
+AstrBot 的调用是 wait handler.handler()（core/core_lifecycle.py:375），**不传 self**。
+正常环境里注册表存的是**绑定方法**（self 已绑定）所以没事；这个环境里注册进去的是
+**未绑定的类函数**，于是：
+
+- 要求 self 的 handler → missing 1 required positional argument: 'self'；
+- (self, event, req) → missing 'req'（event 落进 self）；
+- (self, *args) → 事件被塞进 self（日志里 self=WebChatMessageEvent）。
+
+**修法**：handle_message_v017 / hook_llm_request_v017 / command_topic_v017 /
+on_loaded_v017 全部改为**模块级函数**，签名是 (*args, **kwargs)，用 isinstance
+自己认出事件与请求。模块级函数没有 self 这个位置，AstrBot 怎么调都落对。
+
+- _extract() 允许零参数（on_astrbot_loaded 就是 handler() 零参调用）。
+- 新增回归用例 [12] handler 的形态：逐个断言四个 handler 是模块级、无必填参数，
+  并像 AstrBot 那样**零参数调用 on_loaded_v017()**、以三种方式调用消息 handler。
+- 状态仍全部在模块级 RUNTIME / _CTX 上。
+
+
 ## v0.2.0
 
 - **改：去掉英文别名 	opicrouter**（只留 话题织机）。	opic 和 	opicrouter 都是

@@ -328,7 +328,8 @@ MODULE = None
 def state_store():
     """取当前模块级话题状态存储。
 
-    新架构里 store 不再挂在插件实例上，测试也要跟着改。
+    新架构里 store 挂在模块级 RUNTIME 上（不再挂在插件实例上，因为实机派发 handler
+    时 self 可能不是插件实例），测试也要跟着改。
 
     Returns:
         TopicStore 实例。
@@ -370,10 +371,10 @@ async def run_detect(plugin, event, req=None):
         event: 消息事件。
         req: `ProviderRequest`，为 None 时只走消息事件路径。
     """
-    async for _ in plugin.handle_message_v017(event):
+    async for _ in MODULE.handle_message_v017(event):
         pass
     if req is not None:
-        await plugin.hook_llm_request_v017(event, req)
+        await MODULE.hook_llm_request_v017(event, req)
 
 
 async def test_metadata(module, tmp_root: Path) -> None:
@@ -678,20 +679,20 @@ async def test_request_hook_alone(module) -> None:
 
     req = ProviderRequest(prompt=event.message_str)
     # 只走钩子：先挂起、再执行，等价于实机上"消息事件没触发、只有钩子"的情况
-    await plugin.hook_llm_request_v017(event, req)
+    await MODULE.hook_llm_request_v017(event, req)
     # 钩子本身不做判定（判定属于消息事件），所以这里不应该有注入
     check("钩子单独调用不会凭空判定", len(req.extra_user_content_parts) == 0)
 
     # 走完消息事件后，挂起动作会在下一次钩子调用时执行
-    async for _ in plugin.handle_message_v017(event):
+    async for _ in MODULE.handle_message_v017(event):
         pass
     check("消息事件完成了判定", state_store().get(umo).turns == 1)
     req2 = ProviderRequest(prompt=event.message_str)
-    await plugin.hook_llm_request_v017(event, req2)
+    await MODULE.hook_llm_request_v017(event, req2)
     check("挂起的 hint 动作已执行", len(req2.extra_user_content_parts) == 1)
 
     # 同一条消息再走一遍消息事件，不应该被判定两次
-    async for _ in plugin.handle_message_v017(event):
+    async for _ in MODULE.handle_message_v017(event):
         pass
     check(
         "重复到达的消息被跳过",
@@ -701,7 +702,7 @@ async def test_request_hook_alone(module) -> None:
 
     # 用户真的把同一句话又发了一遍（新的消息 id）→ 应该算新的一轮
     same_text_again = FakeEvent("帮我写个爬虫抓豆瓣", umo)
-    async for _ in plugin.handle_message_v017(same_text_again):
+    async for _ in MODULE.handle_message_v017(same_text_again):
         pass
     check(
         "用户重发同样的话算新一轮",
@@ -849,7 +850,7 @@ async def test_topic_command(module) -> None:
         """
         ev = FakeEvent(message, umo)
         out = []
-        async for result in plugin.command_topic_v017(ev):
+        async for result in MODULE.command_topic_v017(ev):
             out.append(result["text"])
         return out
 
@@ -884,7 +885,8 @@ async def test_entry_points(module) -> None:
 
     from astrbot.api.provider import ProviderRequest
 
-    seen = inspect.signature(module.TopicRouterPlugin.handle_message_v017)
+    mod = MODULE
+    seen = inspect.signature(mod.handle_message_v017)
     seen_params = list(seen.parameters.values())
     seen_required = [
         p.name
@@ -894,8 +896,8 @@ async def test_entry_points(module) -> None:
         not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
     ]
     check(
-        "消息处理器除了 self 不要求任何参数（self 绑错也不会报错）",
-        seen_required == ["self"],
+        "消息处理器没有任何必填参数（AstrBot 不传 self 也不会报错）",
+        seen_required == [],
         str(seen_required),
     )
     check(
@@ -905,7 +907,7 @@ async def test_entry_points(module) -> None:
         str([(p.name, p.kind.name) for p in seen_params]),
     )
 
-    hook = inspect.signature(module.TopicRouterPlugin.hook_llm_request_v017)
+    hook = inspect.signature(mod.hook_llm_request_v017)
     params = list(hook.parameters.values())
     required = [
         p.name
@@ -915,8 +917,8 @@ async def test_entry_points(module) -> None:
         not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
     ]
     check(
-        "请求钩子除了 self 不要求任何参数（少传/多传都不会报错）",
-        required == ["self"],
+        "请求钩子没有任何必填参数（少传/多传都不会报错）",
+        required == [],
         str(required),
     )
     check(
@@ -927,7 +929,7 @@ async def test_entry_points(module) -> None:
     )
     # 这条是给未来改代码的人（包括我自己）的警告：AstrBot 按"模块+函数名"复用
     # handler 元数据，方法名一旦叫回 on_llm_request，就会命中旧条目、新代码永不生效。
-    hook_name = module.TopicRouterPlugin.hook_llm_request_v017.__name__
+    hook_name = MODULE.hook_llm_request_v017.__name__
     check("请求钩子的方法名不是 on_llm_request", hook_name != "on_llm_request", hook_name)
     check(
         "请求钩子的方法名带版本号",
@@ -941,7 +943,7 @@ async def test_entry_points(module) -> None:
     fresh_data_root("entries-bare")
     context = FakeContext()
     plugin = make_plugin(module, context, {"mode": "mark"})
-    await plugin.hook_llm_request_v017(FakeEvent("你好", umo))
+    await MODULE.hook_llm_request_v017(FakeEvent("你好", umo))
     check("钩子只传 event 不抛异常", True)
 
     # 位置参数 / 关键字参数里的请求都能认出来
@@ -950,9 +952,9 @@ async def test_entry_points(module) -> None:
     plugin_pos = make_plugin(module, ctx_pos, {"mode": "hint"})
     ev_pos = FakeEvent("帮我写个爬虫抓豆瓣", umo)
     real_req = ProviderRequest(prompt=ev_pos.message_str)
-    async for _ in plugin_pos.handle_message_v017(ev_pos):
+    async for _ in MODULE.handle_message_v017(ev_pos):
         pass
-    await plugin_pos.hook_llm_request_v017(ev_pos, real_req)
+    await MODULE.hook_llm_request_v017(ev_pos, real_req)
     check(
         "位置参数里的请求被认出来",
         len(real_req.extra_user_content_parts) == 1,
@@ -964,9 +966,9 @@ async def test_entry_points(module) -> None:
     plugin_kw = make_plugin(module, ctx_kw, {"mode": "hint"})
     ev_kw = FakeEvent("帮我写个爬虫抓豆瓣", umo)
     kw_req = ProviderRequest(prompt=ev_kw.message_str)
-    async for _ in plugin_kw.handle_message_v017(ev_kw):
+    async for _ in MODULE.handle_message_v017(ev_kw):
         pass
-    await plugin_kw.hook_llm_request_v017(ev_kw, req=kw_req)
+    await MODULE.hook_llm_request_v017(ev_kw, req=kw_req)
     check(
         "关键字参数里的请求被认出来",
         len(kw_req.extra_user_content_parts) == 1,
@@ -974,38 +976,111 @@ async def test_entry_points(module) -> None:
     )
 
     # 能从事件 extra 里找回 ProviderRequest
-    # 实机现象：某些派发方式下 self 被绑成了事件对象。此时钩子既不能炸，也不能误动作。
+    # 实机上是「未绑定」调用：注册表里存的是类函数，AstrBot 直接 handler(event, req)。
+    # handler 现在是模块级函数，所以这种调用会**正常工作**（这正是修复目标）。
     fresh_data_root("entries-unbound")
     ctx_unbound = FakeContext()
     plugin_unbound = make_plugin(module, ctx_unbound, {"mode": "hint"})
     ev_unbound = FakeEvent("帮我写个爬虫抓豆瓣", umo)
     req_unbound = ProviderRequest(prompt=ev_unbound.message_str)
-    async for _ in plugin_unbound.handle_message_v017(ev_unbound):
+    async for _ in MODULE.handle_message_v017(ev_unbound):
         pass
-    # 直接按"未绑定函数"的方式调用：第一个位置参数会落到 self 上
+    unbound_ok = True
     try:
-        await type(plugin_unbound).hook_llm_request_v017(ev_unbound, req_unbound)
-        unbound_ok = True
+        await MODULE.hook_llm_request_v017(ev_unbound, req_unbound)
     except Exception as exc:  # noqa: BLE001 - 就是要看它会不会炸
         unbound_ok = False
         print(f"       [debug] 未绑定调用抛了: {type(exc).__name__}: {exc}")
-    check("self 被绑成事件时钩子不抛异常", unbound_ok)
+    check("未绑定调用（handler(event, req)）不抛异常", unbound_ok)
     check(
-        "self 异常时不会误改请求",
-        len(req_unbound.extra_user_content_parts) == 0,
+        "未绑定调用也能正常完成请求改写",
+        len(req_unbound.extra_user_content_parts) == 1,
         str(req_unbound.extra_user_content_parts),
     )
+
+    # 只拿到请求、拿不到事件（实机日志里的形态）：安静返回，不炸
+    fresh_data_root("entries-req-only")
+    ctx_reqonly = FakeContext()
+    make_plugin(module, ctx_reqonly, {"mode": "hint"})
+    req_only = ProviderRequest(prompt="只有请求")
+    try:
+        await MODULE.hook_llm_request_v017(req_only)
+        check("只有 ProviderRequest 时不抛异常", True)
+    except Exception as exc:  # noqa: BLE001
+        check("只有 ProviderRequest 时不抛异常", False, f"{type(exc).__name__}: {exc}")
 
     # 钩子只拿到事件（没有请求对象）时安全退出
     fresh_data_root("entries-no-request")
     ctx_noreq = FakeContext()
     plugin_noreq = make_plugin(module, ctx_noreq, {"mode": "hint"})
     ev_noreq = FakeEvent("帮我写个爬虫抓豆瓣", umo)
-    async for _ in plugin_noreq.handle_message_v017(ev_noreq):
+    async for _ in MODULE.handle_message_v017(ev_noreq):
         pass
-    await plugin_noreq.hook_llm_request_v017(ev_noreq)
+    await MODULE.hook_llm_request_v017(ev_noreq)
     check("钩子只拿到事件时不抛异常", True)
     check("拿不到请求时不换对话", ctx_noreq.conversation_manager.new_calls == [])
+
+
+async def test_handlers_are_module_level(module) -> None:
+    """handler 必须是模块级、且任何调用方式都不会抛参数错误。
+
+    实机证据（AstrBot 4.28.1）：
+
+        hook(on_astrbot_loaded) -> None - on_loaded_v017
+        TypeError: TopicRouterPlugin.on_loaded_v017() missing 1 required positional
+                   argument: 'self'
+
+    AstrBot 用 `await handler.handler()` 直接调用、**不传 self**。正常环境里注册表存的
+    是绑定方法所以没事，这个环境里存的是未绑定类函数。所以 handler 必须是模块级函数
+    且不声明任何必填参数——多一个就 `missing ...`。
+    """
+    import inspect
+
+    print("\n[12] handler 的形态（实机踩过的坑）")
+    for name in (
+        "handle_message_v017",
+        "hook_llm_request_v017",
+        "command_topic_v017",
+        "on_loaded_v017",
+    ):
+        func = getattr(MODULE, name)
+        params = list(inspect.signature(func).parameters.values())
+        required = [
+            p.name
+            for p in params
+            if p.default is inspect.Parameter.empty
+            and p.kind
+            not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+        ]
+        check(f"{name} 是模块级函数（不是类方法）", not inspect.ismethod(func) and func.__qualname__ == name, func.__qualname__)
+        check(f"{name} 没有任何必填参数", required == [], str(required))
+
+    # 最关键的一条：像 AstrBot 那样零参数调用 on_loaded
+    fresh_data_root("module-level-onloaded")
+    ok = True
+    try:
+        await MODULE.on_loaded_v017()
+    except Exception as exc:  # noqa: BLE001 - 就是要看它炸不炸
+        ok = False
+        print(f"       [debug] on_loaded_v017() 抛了: {type(exc).__name__}: {exc}")
+    check("on_loaded_v017() 零参数调用不报错（复现 missing 'self' 的那条路径）", ok)
+
+    # 消息 handler：零参数、只传事件、多传一个 self 都要安全
+    for label, call_args in (
+        ("零参数", ()),
+        ("只传事件", (FakeEvent("测试零参数", "aiocqhttp:group:ml"),)),
+        (
+            "多传一个 self（未绑定调用的形态）",
+            (SimpleNamespace(unified_msg_origin="x", message_str="y"), FakeEvent("测试未绑定", "aiocqhttp:group:ml")),
+        ),
+    ):
+        fresh_data_root("module-level-msg")
+        try:
+            async for _ in MODULE.handle_message_v017(*call_args):
+                pass
+            check(f"handle_message_v017 {label} 不抛异常", True)
+        except Exception as exc:  # noqa: BLE001
+            check(f"handle_message_v017 {label} 不抛异常", False, f"{type(exc).__name__}: {exc}")
 
 
 async def main() -> int:
@@ -1033,6 +1108,7 @@ async def main() -> int:
         await test_failure_paths(plugin_main)
         await test_topic_command(plugin_main)
         await test_entry_points(plugin_main)
+        await test_handlers_are_module_level(plugin_main)
     except Exception:  # noqa: BLE001
         traceback.print_exc()
         FAILED.append("测试脚本本身抛异常")

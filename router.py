@@ -197,15 +197,15 @@ def _looks_like_event(candidate: Any) -> bool:
     )
 
 
-def _extract(event_or_args: Any, *rest: Any, **kwargs: Any) -> tuple[Any, Any]:
+def _extract(*args: Any, **kwargs: Any) -> tuple[Any, Any]:
     """从一堆参数里认出（事件, ProviderRequest）。
 
     只按类型/特征判断，不假设谁在第几个位置——实机上出现过 `self` 是事件、
-    请求在 `args` 里的情况。
+    请求在 `args` 里、甚至零参数调用（`on_astrbot_loaded` 就是 `handler()`）的情况。
+    所以这里允许零参数，认不出就返回 (None, None)。
 
     Args:
-        event_or_args: 第一个候选参数。
-        *rest: 其余位置参数。
+        *args: 任意位置参数。
         **kwargs: 关键字参数。
 
     Returns:
@@ -213,7 +213,7 @@ def _extract(event_or_args: Any, *rest: Any, **kwargs: Any) -> tuple[Any, Any]:
     """
     event: Any = None
     req: Any = None
-    for candidate in (event_or_args, *rest):
+    for candidate in args:
         if isinstance(candidate, ProviderRequest):
             req = req if req is not None else candidate
         elif event is None and _looks_like_event(candidate):
@@ -803,144 +803,160 @@ class TopicRouterPlugin(Star):
             f"| file={Path(__file__).resolve()} | mode={_mode()}"
         )
 
-    # ------------------------------------------------------------ 主判定入口
-
-    @filter.event_message_type(filter.EventMessageType.ALL)
-    async def handle_message_v017(self, *args: Any, **kwargs: Any):
-        """主判定入口：消息事件。
-
-        **入口日志是必需的**：AstrBot 的 `star_request.py` 是
-        `for handler in activated_handlers: if event.is_stopped(): break`，任何一个
-        handler 抛异常都会 `stop_event()`，排在后面的 handler 全部不执行。所以这里
-        既要在入口留下证据，也要自己兜住所有异常。
-
-        Args:
-            *args: 派发方给的位置参数（通常就是事件）。
-            **kwargs: 关键字形式的情况。
-
-        Yields:
-            None: 只做判定与记录，不占用消息（不回复、不阻断）。
-        """
-        event, _req = _extract(*args, **kwargs)
-        message = (getattr(event, "message_str", "") or "").strip()
-        stopped = "?"
-        try:
-            stopped = str(event.is_stopped())
-        except Exception:  # noqa: BLE001
-            pass
-        logger.info(
-            f"[{PLUGIN_NAME}] handle_message_v017 被调用 | {PLUGIN_VERSION} "
-            f"| self={type(args[0]).__name__ if args else 'none'} "
-            f"| umo={getattr(event, 'unified_msg_origin', '?')} "
-            f"| msg={message[:40]!r} | stopped={stopped}"
-        )
-        if event is not None and message:
-            try:
-                await _detect(_ctx(), event, message)
-            except Exception as exc:  # noqa: BLE001
-                # 判定层绝不能把异常抛出去：会被 stop_event()，连累同一条消息上的
-                # 其它插件（这个坑我们踩过）。
-                logger.error(
-                    f"[{PLUGIN_NAME}] 判定异常（已兜住，不影响其它插件）：{exc}",
-                    exc_info=True,
-                )
-        return
-        yield  # pragma: no cover - 让它是异步生成器，框架两种形态都接受
-
-    # -------------------------------------------------------- 请求改写（可选）
-
-    @filter.on_llm_request()
-    async def hook_llm_request_v017(self, *args: Any, **kwargs: Any) -> None:
-        """可选增强：能拿到 `ProviderRequest` 时执行 `hint` / `auto` 的请求改写。
-
-        判定已经不依赖这里（见 `handle_message_v017`）。拿不到请求就安静返回。
-
-        Args:
-            *args: 派发方给的位置参数。
-            **kwargs: 关键字形式的情况。
-        """
-        event, req = _extract(*args, **kwargs)
-        logger.info(
-            f"[{PLUGIN_NAME}] hook_llm_request_v017 被调用 | {PLUGIN_VERSION} "
-            f"| has_event={event is not None} | has_request={req is not None} "
-            f"| args={[type(a).__name__ for a in args]} | kwargs={sorted(kwargs)}"
-        )
-        if event is None or req is None:
-            return
-        try:
-            await _apply_request_actions(_ctx(), event, req)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                f"[{PLUGIN_NAME}] 请求改写被跳过：{type(exc).__name__}: {exc}"
-            )
-
-    # ---------------------------------------------------------------- 指令
-
-    @filter.command("topicweave", alias={"话题织机"})
-    async def command_topic_v017(self, *args: Any, **kwargs: Any):
-        """查看/管理当前会话的话题状态。
-
-        指令名为什么不是 `topic`：`topic` 太通用，AstrBot 的「检测到指令冲突」会把
-        它和别的插件判成同一指令、一次触发多个插件响应。这里用不会撞的名字。
-        别名只留一个**中文长名**（`话题织机`）：`topic` / `topicrouter` 这类英文常用词
-        同样容易与别的插件撞名（实测踩过 `topicrouter`）。
-
-        Args:
-            *args: 派发方给的位置参数（通常就是事件）。
-
-        Yields:
-            指令回复。
-        """
-        event, _req = _extract(*args, **kwargs)
-        if event is None:
-            return
-        try:
-            result = await _topic_status(_ctx(), event)
-        except Exception as exc:  # noqa: BLE001
-            logger.error(
-                f"[{PLUGIN_NAME}] /topicweave 执行失败: {exc}", exc_info=True
-            )
-            return
-        yield event.plain_result(result)
-
-    # ---------------------------------------------------------------- 生命周期
-
-    @filter.on_astrbot_loaded()
-    async def on_loaded_v017(self, *args: Any, **kwargs: Any) -> None:
-        """启动后把可用的模型 ID 打进日志，方便填 provider_id。
-
-        Args:
-            *args: 派发方给的位置参数。
-            **kwargs: 关键字形式的情况。
-        """
-        ids: list[str] = []
-        try:
-            manager = getattr(_ctx(), "provider_manager", None)
-            for item in list(getattr(manager, "provider_insts", []) or []):
-                conf = getattr(item, "provider_config", {}) or {}
-                pid = str(conf.get("id", "") or "")
-                if pid:
-                    ids.append(pid)
-        except Exception as exc:  # noqa: BLE001 - 只是诊断信息
-            logger.debug(f"[{PLUGIN_NAME}] 枚举 provider 失败: {exc}")
-
-        logger.info(
-            f"[{PLUGIN_NAME}] 已加载 {PLUGIN_VERSION} | 模式 {_mode()} | 判定模型 "
-            f"{RUNTIME.config.get('provider_id') or '（跟随当前会话）'} "
-            f"| 状态文件 {_store().path}"
-        )
-        if ids:
-            logger.info(
-                f"[{PLUGIN_NAME}] 可用的模型 ID（可直接填进 provider_id）："
-                + "、".join(ids[:20])
-            )
-
     async def terminate(self) -> None:
         """插件卸载/停用时保存状态。"""
         try:
             _store().save()
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[{PLUGIN_NAME}] 退出时保存状态失败: {exc}")
+
+
+# ===========================================================================
+# 下面四个 handler 是**模块级函数**，故意不写成类的方法。
+#
+# 为什么（实机证据，别再改回方法）：
+#
+#   core.core_lifecycle:372  hook(on_astrbot_loaded) -> None - on_loaded_v017
+#   TypeError: TopicRouterPlugin.on_loaded_v017() missing 1 required positional argument: 'self'
+#
+# AstrBot 的调用是 `await handler.handler()`（`core/core_lifecycle.py:375`），**不传
+# self**。正常环境里注册表存的是**绑定方法**（self 已绑定），所以没事；但在这个环境
+# 里注册进去的是**未绑定的类函数**，于是：
+#
+#   * 要求 self 的 handler 直接报 missing 'self'（上面那条）；
+#   * `(self, event, req)` 这种签名会报 missing 'req'（event 落进 self）；
+#   * `(self, *args)` 会把事件塞进 self（日志里 self=WebChatMessageEvent）。
+#
+# 模块级函数没有 self 这个位置，AstrBot 怎么调都落对：调用方多传的 self 会被
+# `*args/**kwargs` 吃掉，事件与请求由 `_extract` 按类型认出来。
+# ===========================================================================
+
+
+@filter.event_message_type(filter.EventMessageType.ALL)
+async def handle_message_v017(*args: Any, **kwargs: Any):
+    """主判定入口：消息事件。
+
+    **入口日志是必需的**：AstrBot 的 `star_request.py` 是
+    `for handler in activated_handlers: if event.is_stopped(): break`，任何一个
+    handler 抛异常都会 `stop_event()`，排在后面的 handler 全部不执行。所以这里
+    既要在入口留下证据，也要自己兜住所有异常。
+
+    Args:
+        *args: 派发方给的位置参数（事件，或先来一个被误当 self 的对象）。
+        **kwargs: 关键字形式的情况。
+
+    Yields:
+        None: 只做判定与记录，不占用消息（不回复、不阻断）。
+    """
+    event, _req = _extract(*args, **kwargs)
+    message = (getattr(event, "message_str", "") or "").strip()
+    stopped = "?"
+    try:
+        stopped = str(event.is_stopped())
+    except Exception:  # noqa: BLE001
+        pass
+    logger.info(
+        f"[{PLUGIN_NAME}] handle_message_v017 被调用 | {PLUGIN_VERSION} "
+        f"| umo={getattr(event, 'unified_msg_origin', '?')} "
+        f"| msg={message[:40]!r} | stopped={stopped} "
+        f"| args={[type(a).__name__ for a in args]}"
+    )
+    if event is not None and message:
+        try:
+            await _detect(_ctx(), event, message)
+        except Exception as exc:  # noqa: BLE001
+            # 判定层绝不能把异常抛出去：会被 stop_event()，连累同一条消息上的
+            # 其它插件（这个坑我们踩过）。
+            logger.error(
+                f"[{PLUGIN_NAME}] 判定异常（已兜住，不影响其它插件）：{exc}",
+                exc_info=True,
+            )
+    return
+    yield  # pragma: no cover - 让它是异步生成器，框架两种形态都接受
+
+
+@filter.on_llm_request()
+async def hook_llm_request_v017(*args: Any, **kwargs: Any) -> None:
+    """可选增强：能拿到 `ProviderRequest` 时执行 `hint` / `auto` 的请求改写。
+
+    判定不依赖这里（见 `handle_message_v017`）。拿不到请求就安静返回：实机上这个
+    钩子只拿到 `ProviderRequest`、拿不到事件（`has_event=False`）。
+
+    Args:
+        *args: 派发方给的位置参数。
+        **kwargs: 关键字形式的情况。
+    """
+    event, req = _extract(*args, **kwargs)
+    logger.info(
+        f"[{PLUGIN_NAME}] hook_llm_request_v017 被调用 | {PLUGIN_VERSION} "
+        f"| has_event={event is not None} | has_request={req is not None} "
+        f"| args={[type(a).__name__ for a in args]} | kwargs={sorted(kwargs)}"
+    )
+    if event is None or req is None:
+        return
+    try:
+        await _apply_request_actions(_ctx(), event, req)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[{PLUGIN_NAME}] 请求改写被跳过：{type(exc).__name__}: {exc}")
+
+
+@filter.command("topicweave", alias={"话题织机"})
+async def command_topic_v017(*args: Any, **kwargs: Any):
+    """查看/管理当前会话的话题状态。
+
+    指令名为什么不是 `topic`：`topic` 太通用，AstrBot 的「检测到指令冲突」会把它和
+    别的插件判成同一指令、一次触发多个插件响应。别名只留一个中文长名（`话题织机`）：
+    `topicrouter` 这类英文常用词同样会撞名（实测踩过）。
+
+    Args:
+        *args: 派发方给的位置参数（事件）。
+
+    Yields:
+        指令回复。
+    """
+    event, _req = _extract(*args, **kwargs)
+    if event is None:
+        return
+    try:
+        result = await _topic_status(_ctx(), event)
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"[{PLUGIN_NAME}] /topicweave 执行失败: {exc}", exc_info=True)
+        return
+    yield event.plain_result(result)
+
+
+@filter.on_astrbot_loaded()
+async def on_loaded_v017(*args: Any, **kwargs: Any) -> None:
+    """启动后把可用的模型 ID 打进日志，方便填 provider_id。
+
+    签名不带任何必填参数：实机上是 `await handler.handler()` 直接调用的（连 self 都
+    不传），多一个必填参数就会 `missing ...` 报错。
+
+    Args:
+        *args: 派发方给的位置参数。
+        **kwargs: 关键字形式的情况。
+    """
+    ids: list[str] = []
+    try:
+        manager = getattr(_ctx(), "provider_manager", None)
+        for item in list(getattr(manager, "provider_insts", []) or []):
+            conf = getattr(item, "provider_config", {}) or {}
+            pid = str(conf.get("id", "") or "")
+            if pid:
+                ids.append(pid)
+    except Exception as exc:  # noqa: BLE001 - 只是诊断信息
+        logger.debug(f"[{PLUGIN_NAME}] 枚举 provider 失败: {exc}")
+
+    logger.info(
+        f"[{PLUGIN_NAME}] 已加载 {PLUGIN_VERSION} | 模式 {_mode()} | 判定模型 "
+        f"{RUNTIME.config.get('provider_id') or '（跟随当前会话）'} "
+        f"| 状态文件 {_store().path}"
+    )
+    if ids:
+        logger.info(
+            f"[{PLUGIN_NAME}] 可用的模型 ID（可直接填进 provider_id）："
+            + "、".join(ids[:20])
+        )
 
 
 # --------------------------------------------------------------------- 工具
