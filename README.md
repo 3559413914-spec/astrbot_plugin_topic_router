@@ -82,7 +82,7 @@ AstrBot 的对话是一整条上下文。当用户在同一个会话里从"帮�
 | Docker | 容器内 `/AstrBot/data`（你挂载的宿主机目录） | `/AstrBot/data/plugins/` |
 | 桌面客户端 | `~/.astrbot/data` | `~/.astrbot/data/plugins/` |
 | 源码 / CLI | `<启动目录>/data`（可用 `ASTRBOT_ROOT` 改） | `<启动目录>/data/plugins/` |
-| 飞牛 NAS 应用 | 应用数据目录（fnOS 里是 `/vol1/@appdata/astrbot/data`） | 同上 `plugins/` |
+| 飞牛 NAS 原生应用 | 应用私有目录（fnOS 上通常是 `/vol1/@appdata/astrbot/data`） | 同上 `plugins/` |
 
 > Windows 的 `~` 是 `C:\Users\<你的用户名>`；macOS / Linux 的 `~` 是 `/Users/<你>`、
 > `/home/<你>`。
@@ -180,42 +180,78 @@ python tests\test_portability.py
 
 ### 方式 D：飞牛 NAS（fnOS）
 
-fnOS 上 AstrBot 通常以"应用"形式运行，数据目录在应用私有目录里（本插件实测环境为
-`/vol1/@appdata/astrbot/data`）。**优先走 WebUI 上传**，这样不需要 SSH：
+fnOS 上的 AstrBot 有两种常见装法，**先确认你是哪种**，因为重启方式完全不同：
 
-1. 浏览器打开 `http://<NAS 的 IP>:6185` → 用管理员账号登录（默认用户名 `astrbot`）；
+| 你的情况 | 怎么判断 | 重启方式 |
+| --- | --- | --- |
+| **fnOS 原生应用（FPK）** | 应用中心里有 AstrBot 卡片；SSH 里能看到 `/vol1/@apphome/astrbot/` | 应用中心卡片里的**停用 → 启用**（原生应用不支持 `systemctl`，也不要用 docker 命令） |
+| **Docker 部署** | 自己用 compose / `docker run` 起的 | `docker restart <容器名>` |
+
+**D1. 装插件（两种装法都一样，优先走 WebUI）**
+
+1. 浏览器打开 `http://<NAS 的 IP>:6185`，用户名默认 `astrbot`；
+   - 首次登录的初始密码在日志里：`/vol1/@appdata/astrbot/data/logs/astrbot.log` 搜 `Initial password`；
+   - 登入后请立刻改密码。
 2. **插件 → 插件 → 安装插件 → 从文件安装** → 上传 zip；
 3. 在 **插件配置** 里填 `provider_id`，保存；
-4. 如果日志里没有出现 `模块已导入 <版本>`，去 fnOS 的**应用面板把 AstrBot 停止再启动**
-   （或在 SSH 里 `docker restart <容器名>`）。fnOS 的 AstrBot 一般是容器化的，
-   重启应用 = 重启容器。
+4. 如果日志里没有出现 `模块已导入 <版本>`，按上表**停用再启用**（或重启容器）。
 
-**想手动放文件（需要能访问应用数据目录）**：
+**D2. 手动放文件（不推荐，仅在 WebUI 上传不可用时）**
+
+原生应用的运行时数据在应用私有目录里，**文件管理器的「应用文件」进不去**（它只展示应用
+用 `data-share` 声明的共享目录）。要手动放就得走 SSH：
 
 ```bash
-# 通过 SSH 登录 NAS 后
-# 1) 上传 zip 到任意目录，先解压
+# 1) 登录 NAS（设置 → SSH 打开），提权
+ssh <管理员>@<NAS_IP>
+sudo -i
+
+# 2) 确认应用数据真实路径（不同 fnOS 版本可能不同，先确认再动手）
+readlink -f /vol1/@appdata/astrbot
+
+# 3) 解压并放进插件目录
 unzip astrbot_plugin_topic_router-*.zip -d /tmp/
-# 2) 放进插件目录（注意目录名必须保持 astrbot_plugin_topic_router）
-cp -r /tmp/astrbot_plugin_topic_router /vol1/@appdata/astrbot/data/plugins/
-# 3) 确认结构正确
+cp -r /tmp/astrbot_plugin_topic_router \
+      /vol1/@appdata/astrbot/data/plugins/
+
+# 4) 关键：把属主改回应用用户，否则 AstrBot 读不到 / 写不了
+chown -R astrbot:astrbot /vol1/@appdata/astrbot/data/plugins/astrbot_plugin_topic_router
+
+# 5) 确认结构
 ls /vol1/@appdata/astrbot/data/plugins/astrbot_plugin_topic_router/metadata.yaml
-# 4) 重启 AstrBot 应用（fnOS 面板里停止→启动，或 docker restart）
 ```
 
-> 权限提醒：`/vol1/@appdata/...` 属于应用私有目录，某些 fnOS 版本需要 root 或 sudo 才能写入。
-> 如果文件管理器进不去，就用 WebUI 上传，没必要为装插件去改权限。
+然后回应用中心**停用 → 启用**。
 
-**升级/重装注意**：插件本体在 `data/plugins/` 里，属于应用数据的一部分。常规升级 AstrBot 应用
-不会动它，但**卸载应用时如果勾选了"同时删除数据"就会丢**。建议定期备份整个
-`data/plugins/` 与 `data/plugin_data/` 目录——后者存着本插件的话题状态
-（`plugin_data/astrbot_plugin_topic_router/topic_state.json`）。
+> ⚠️ 用 `sudo cp` 拷进去的文件属主是 `root`，**不做第 4 步的 chown 就会失败**——这是
+> 原生应用手拷文件最常见的坑。
+> ⚠️ 部分 fnOS 版本的应用数据根目录不在 `/vol1/@appdata`，所以第 2 步的 `readlink` 不要跳过。
+
+**D3. 数据安全（升级 / 卸载 / 备份）**
+
+- **升级 AstrBot 应用不会删数据**：升级流程只做数据与配置迁移，并会先停应用再启；
+- **卸载时要选「保留数据」**：fnOS 卸载向导通常给「保留数据（推荐）/ 删除所有数据」二选一，
+  选删除就真的没了（有用户因此重装后登录不上，只能去 `cmd_config.json` 里删认证字段恢复）；
+- **备份建议**：SSH 打包整个 `/vol1/@appdata/astrbot/`，里面包含 `data/`（插件、
+  插件配置与 `plugin_data/` 状态）、`logs/`。`@appdata` 在数据卷上，换盘或重装系统前必须备份；
+- ⚠️ **恢复时权限要一起恢复**（属主/属组），否则数据回来也用不了。
+
+> fnOS 目前**没有官方 AstrBot 文档**。网上流传最广的那篇飞牛 AstrBot 教程是 **Docker 版**，
+> 路径是 `/vol1/1000/docker/AstrBot/data`，和原生应用完全不同，别照着做。
 
 ---
 
 ### 方式 E：macOS / Linux 源码部署
 
-按照官方 [手动部署](https://docs.astrbot.app/deploy/astrbot/cli.html)：
+**E0. 如果你还没装 AstrBot**，两种更省事的选择：
+
+- **一键启动器**（Windows / macOS / Linux）：从
+  [AstrBotDevs/astrbot-launcher](https://github.com/AstrBotDevs/astrbot-launcher) 的 Releases
+  下载对应安装包（Windows x64/arm64、macOS aarch64 等）装上即可。macOS 若提示"已损坏"，
+  终端执行 `xattr -dr com.apple.quarantine "/Applications/AstrBot Launcher.app"` 后重开。
+- **手动部署**（下面这段）：适合服务器与想完全掌控环境的人。
+
+**E1. 手动部署**（官方 [手动部署文档](https://docs.astrbot.app/deploy/astrbot/cli.html)）：
 
 ```bash
 git clone https://github.com/AstrBotDevs/AstrBot
@@ -224,7 +260,7 @@ uv sync          # 或 pip install -r requirements.txt
 uv run main.py   # 启动；数据目录就是当前目录下的 data/
 ```
 
-然后：
+然后装插件：
 
 ```bash
 # 把插件放进数据目录（注意：这里是 <AstrBot 启动目录>/data，不是 ~/.astrbot）
@@ -237,6 +273,8 @@ cp -r astrbot_plugin_topic_router ./data/plugins/
 ```bash
 export ASTRBOT_ROOT=/opt/astrbot      # 之后数据都在 /opt/astrbot/data
 ```
+
+> 启动器/脚本部署同样落在 `<AstrBot 目录>/data/plugins/`，WebUI 默认也是 `:6185`。
 
 ---
 
@@ -348,7 +386,7 @@ export ASTRBOT_ROOT=/opt/astrbot      # 之后数据都在 /opt/astrbot/data
 | `[WARN] 判定模型调用失败` | `provider_id` 写错或该 provider 不可用；去日志里抄一个可用的 ID |
 | `[WARN] 判定模型超时` | 网络慢或模型慢：调大 `timeout_seconds`，或换成更快的模型 |
 | 每轮都被判成新话题 | 说明话题名一直是空的：确认判定模型能正常返回 JSON（换成 flash 这类快的、非推理模型） |
-| 升级版本后行为没变 / 报旧版本的错 | **重启 AstrBot 进程**。热重载不会清掉内存注册表里的旧 handler，只有重启才彻底 |
+| 升级版本后行为没变 / 报旧版本的错 | **重启 AstrBot 进程**：Docker 用 `docker restart <容器>`；fnOS 原生应用在应用中心**停用 → 启用**；桌面客户端退出后重开。热重载不会清掉内存注册表里的旧 handler，只有重启才彻底 |
 | 提示"检测到指令冲突" | 发 `/topicweave conflicts` 看是谁跟谁撞了；如果是别的插件之间撞名，跟本插件无关 |
 | 群聊里几个人互相干扰 | 本插件按会话（UMO）隔离；平台开 `unique_session` 后每人独立 |
 
