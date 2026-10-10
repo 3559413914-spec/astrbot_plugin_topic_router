@@ -53,18 +53,40 @@ def _read_version() -> str:
 REAL_ZIP = (
     Path.home() / "Desktop" / f"astrbot_plugin_topic_router-{_read_version()}.zip"
 )
-UPSTREAM_DIR = Path(r"F:\deep seek\.tmp\astrbot-4281")
+
+# AstrBot v4.28.1 的 zip_updater.py：用来在 POSIX 语义下复现/验证安装流程。
+# 路径可通过环境变量指定；找不到就跳过这一套（不影响其它测试）。
+UPSTREAM_DIR = Path(
+    os.environ.get("ASTRBOT_4281_SRC", str(Path.home() / ".cache" / "astrbot-4281"))
+)
 UPSTREAM_ZIP_UPDATER = UPSTREAM_DIR / "astrbot_core_zip_updater.py"
 
 BS = chr(92)  # 反斜杠；由 chr() 拼出，避免被各种转义层改写
 FS = "/"
 
-_LOCAL_APP = Path(os.environ.get("LOCALAPPDATA", "")) / "AstrBot" / "backend" / "app"
-_LOCAL_SITE = (
-    Path(os.environ.get("USERPROFILE", "")) / ".astrbot" / "data" / "site-packages"
-)
-for _candidate in (_LOCAL_APP, _LOCAL_SITE):
-    if _candidate.is_dir() and str(_candidate) not in sys.path:
+
+def _astrbot_paths() -> list[Path]:
+    """猜出本机 AstrBot 的 import 路径（不写死绝对路径）。
+
+    Returns:
+        存在的候选路径列表。
+    """
+    candidates: list[Path] = []
+    for env_key in ("ASTRBOT_APP_PATH", "ASTRBOT_SITE_PACKAGES"):
+        value = os.environ.get(env_key)
+        if value:
+            candidates.append(Path(value))
+    local = os.environ.get("LOCALAPPDATA", "")
+    home = Path.home()
+    candidates += [
+        Path(local) / "AstrBot" / "backend" / "app" if local else None,
+        home / ".astrbot" / "data" / "site-packages",
+    ]
+    return [c for c in candidates if c is not None and c.is_dir()]
+
+
+for _candidate in _astrbot_paths():
+    if str(_candidate) not in sys.path:
         sys.path.append(str(_candidate))
 
 PASSED: list[str] = []
@@ -115,7 +137,16 @@ def load_upstream_updater():
         `_RepoZipUpdater` 类。
     """
     if not UPSTREAM_ZIP_UPDATER.is_file():
-        raise SystemExit(f"缺少参考实现：{UPSTREAM_ZIP_UPDATER}")
+        raise SystemExit(
+            "跳过：缺少 AstrBot v4.28.1 的 zip_updater.py。\n"
+            f"  期望位置：{UPSTREAM_ZIP_UPDATER}\n"
+            "  获取方式（任选）：\n"
+            "    1) 设置环境变量 ASTRBOT_4281_SRC 指向已解压的 v4.28.1 源码目录；\n"
+            "    2) 从 https://github.com/AstrBotDevs/AstrBot 的 v4.28.1 tag 下载\n"
+            "       astrbot/core/zip_updater.py 与 astrbot/core/repository.py，\n"
+            f"       放到 {UPSTREAM_DIR} 下。\n"
+            "  这一套验证的是「zip 安装流程」，与插件运行无关，缺了不影响别处。"
+        )
 
     mirror = prepare_upstream_mirror()
     import astrbot.core as real_core  # noqa: PLC0415

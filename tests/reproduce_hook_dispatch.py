@@ -30,14 +30,46 @@
 from __future__ import annotations
 
 import inspect
+import os
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-LOCAL_APP = Path(r"C:\Users\Administrator\AppData\Local\AstrBot\backend\app")
-LOCAL_SITE = Path(r"C:\Users\Administrator\.astrbot\data\site-packages")
-for candidate in (LOCAL_APP, LOCAL_SITE):
-    if candidate.is_dir() and str(candidate) not in sys.path:
+
+
+def _astrbot_paths() -> list[Path]:
+    """猜出本机 AstrBot 的 import 路径。
+
+    不写死绝对路径（那样别人 clone 下来跑不了）。查找顺序：
+
+    1. 环境变量 `ASTRBOT_APP_PATH` / `ASTRBOT_SITE_PACKAGES`（自己指定最稳）；
+    2. 桌面版默认位置（Windows / macOS / Linux）；
+    3. pip 安装的 AstrBot（这时它已经在 site-packages 里，什么都不用加）。
+
+    Returns:
+        存在的候选路径列表。
+    """
+    candidates: list[Path] = []
+    for env_key in ("ASTRBOT_APP_PATH", "ASTRBOT_SITE_PACKAGES"):
+        value = os.environ.get(env_key)
+        if value:
+            candidates.append(Path(value))
+    home = Path.home()
+    local = os.environ.get("LOCALAPPDATA", "")
+    candidates += [
+        Path(local) / "AstrBot" / "backend" / "app" if local else None,
+        Path(local) / "AstrBot" / "backend" / "python" / "Lib" / "site-packages"
+        if local
+        else None,
+        home / ".astrbot" / "data" / "site-packages",
+        Path("/Applications/AstrBot.app/Contents/Resources/app"),
+        home / ".local" / "share" / "astrbot",
+    ]
+    return [c for c in candidates if c is not None and c.is_dir()]
+
+
+for candidate in _astrbot_paths():
+    if str(candidate) not in sys.path:
         sys.path.append(str(candidate))
 
 FAILED: list[str] = []

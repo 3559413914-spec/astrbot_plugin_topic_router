@@ -34,6 +34,8 @@ INCLUDE_FILES = (
     "_conf_schema.json",
     "README.md",
     "CHANGELOG.md",
+    "requirements.txt",
+    "LICENSE",
 )
 EXCLUDE_DIRS = {"__pycache__", "tests", ".git"}
 

@@ -1,5 +1,20 @@
 # 更新日志
 
+## v0.2.2
+
+**可移植性收尾：确认别人也能用。**
+
+- 测试脚本不再写死本机绝对路径：AstrBot 运行路径改为自动探测
+  （ASTRBOT_APP_PATH / ASTRBOT_SITE_PACKAGES 环境变量优先，其次桌面版默认位置）；
+  erify_zip_install.py 找不到上游 v4.28.1 源码时给出明确指引并跳过，而不是报错。
+- 新增 	ests/test_portability.py：用**桩模块**隔离 AstrBot 依赖，因此任意 Python 3.10+
+  都能跑。它同时模拟两种 handler 派发契约（绑定方法 / 未绑定函数）与零参数调用
+  （on_astrbot_loaded 的真实形态），16 项断言全过 —— 这是别人装上也能用的证据。
+- 新增 
+equirements.txt（本插件零第三方依赖）与 README「谁能用 / 使用条件」一节，
+  写清版本、Runner、Provider 三个前置条件。
+
+
 ## v0.2.1
 
 **根治：所有 handler 改成模块级函数、不声明 self。**

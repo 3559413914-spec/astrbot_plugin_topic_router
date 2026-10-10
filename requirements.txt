@@ -1,0 +1,8 @@
+# 本插件不依赖任何第三方 Python 包 —— 全部只用标准库。
+#
+# 它运行在 AstrBot 宿主进程里，用到的是宿主提供的这些模块：
+#   astrbot.api.event / astrbot.api.provider / astrbot.api.star / astrbot.core.agent.message
+# 因此这里不需要声明 astrbot 依赖（由宿主提供）。
+#
+# 离线测试需要 Python 3.10+；tests/run_tests.py 需要 AstrBot 自带的 Python 运行时，
+# tests/test_portability.py 则用桩模块，任意 Python 3.10+ 都能跑。
