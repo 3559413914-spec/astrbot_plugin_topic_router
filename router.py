@@ -400,8 +400,60 @@ def _recent_for(umo: str) -> list[str]:
     return RUNTIME.recent.setdefault(umo, [])
 
 
+def _list_provider_ids(ctx: Context | None) -> list[str]:
+    """列出当前可用的 provider ID。
+
+    Args:
+        ctx: 插件上下文。
+
+    Returns:
+        ID 列表（拿不到就返回空列表）。
+    """
+    ids: list[str] = []
+    try:
+        manager = getattr(ctx, "provider_manager", None)
+        for item in list(getattr(manager, "provider_insts", []) or []):
+            conf = getattr(item, "provider_config", {}) or {}
+            pid = str(conf.get("id", "") or "")
+            if pid:
+                ids.append(pid)
+    except Exception as exc:  # noqa: BLE001 - 只是诊断信息
+        logger.debug(f"[{PLUGIN_NAME}] 枚举 provider 失败: {exc}")
+    return ids
+
+
+async def _provider_exists(ctx: Context | None, provider_id: str) -> bool | None:
+    """判断一个 provider ID 是否真的存在。
+
+    实机教训：配置里写了不存在的 ID（比如 `deepseek/deepseek-v4-flash`，而实际是
+    `deepseek/deepseek-flash`）时，`llm_generate` 会抛 `ProviderNotFoundError`
+    （见 AstrBot `core/star/context.py`），异常被兜底逻辑吞掉 → 判定模型那层
+    **静默失效**，只剩启发式在跑。所以这里先查一遍：配错就明确告警并回退到当前会话模型。
+
+    Args:
+        ctx: 插件上下文。
+        provider_id: 待检查的 ID。
+
+    Returns:
+        True / False；无法判断时返回 None（按"存在"处理，交给调用去试）。
+    """
+    manager = getattr(ctx, "provider_manager", None)
+    getter = getattr(manager, "get_provider_by_id", None)
+    if getter is None:
+        return None
+    try:
+        found = await getter(provider_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"[{PLUGIN_NAME}] 校验 provider 失败: {exc}")
+        return None
+    return bool(found)
+
+
 async def _resolve_provider(ctx: Context | None, event: Any) -> tuple[str, str]:
     """决定判定用哪个模型。
+
+    优先级：配置里指定的 ID（**确认存在才用**）→ 当前会话的模型。
+    配置写错时不再静默失败，而是告警 + 回退。
 
     Args:
         ctx: 插件上下文，可能为 None。
@@ -412,7 +464,14 @@ async def _resolve_provider(ctx: Context | None, event: Any) -> tuple[str, str]:
     """
     want = str(RUNTIME.config.get("provider_id", "") or "").strip()
     if want:
-        return want, "配置指定"
+        exists = await _provider_exists(ctx, want)
+        if exists is None or exists:
+            return want, "配置指定"
+        available = _list_provider_ids(ctx)
+        logger.warning(
+            f"[{PLUGIN_NAME}] 配置的判定模型 '{want}' 不存在，已回退到当前会话模型。"
+            f"可用的 ID：" + ("、".join(available[:10]) if available else "（枚举不到）")
+        )
     getter = getattr(ctx, "get_current_chat_provider_id", None)
     if getter is None:
         return "", "上下文不可用"
@@ -1003,22 +1062,19 @@ async def on_loaded_v017(*args: Any, **kwargs: Any) -> None:
         *args: 派发方给的位置参数。
         **kwargs: 关键字形式的情况。
     """
-    ids: list[str] = []
-    try:
-        manager = getattr(_ctx(), "provider_manager", None)
-        for item in list(getattr(manager, "provider_insts", []) or []):
-            conf = getattr(item, "provider_config", {}) or {}
-            pid = str(conf.get("id", "") or "")
-            if pid:
-                ids.append(pid)
-    except Exception as exc:  # noqa: BLE001 - 只是诊断信息
-        logger.debug(f"[{PLUGIN_NAME}] 枚举 provider 失败: {exc}")
+    ids = _list_provider_ids(_ctx())
+    configured = str(RUNTIME.config.get("provider_id", "") or "").strip()
 
     logger.info(
         f"[{PLUGIN_NAME}] 已加载 {PLUGIN_VERSION} | 模式 {_mode()} | 判定模型 "
-        f"{RUNTIME.config.get('provider_id') or '（跟随当前会话）'} "
-        f"| 状态文件 {_store().path}"
+        f"{configured or '（跟随当前会话）'} | 状态文件 {_store().path}"
     )
+    if configured and ids and configured not in ids:
+        logger.warning(
+            f"[{PLUGIN_NAME}] ⚠ 配置的判定模型 '{configured}' 不在可用列表里，"
+            "判定模型那层会失效（只剩启发式）。请从下面的 ID 里挑一个填进 provider_id，"
+            "或把 provider_id 清空以跟随当前会话模型。"
+        )
     if ids:
         logger.info(
             f"[{PLUGIN_NAME}] 可用的模型 ID（可直接填进 provider_id）："

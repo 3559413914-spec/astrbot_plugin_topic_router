@@ -186,6 +186,19 @@ class FakeProviderManager:
             FakeProvider("deepseek/deepseek-v4-flash"),
             FakeProvider("nvidia/deepseek-ai/deepseek-v4-pro"),
         ]
+        # 只有注册在 inst_map 里的 ID 才算"真实存在"，与 AstrBot 的行为一致
+        self.inst_map = {p.provider_config["id"]: p for p in self.provider_insts}
+
+    async def get_provider_by_id(self, provider_id: str):
+        """按 ID 查 provider（复刻 AstrBot 的接口）。
+
+        Args:
+            provider_id: 待查 ID。
+
+        Returns:
+            provider 实例或 None。
+        """
+        return self.inst_map.get(provider_id)
 
 
 class FakeContext:
@@ -548,6 +561,70 @@ async def test_user_prompt_contains_reply(module) -> None:
         3,
     )
     check("没有回复时不出现空行标签", "机器人上一句回复" not in no_reply)
+
+
+async def test_provider_id_fallback(module) -> None:
+    """配错 provider_id 时必须回退，而不是静默失效。
+
+    实机教训（2026-10-11 日志）：配置里写的是 `deepseek/deepseek-v4-flash`，但用户环境里
+    真实存在的是 `deepseek/deepseek-flash`。`llm_generate` 抛 ProviderNotFoundError 后被
+    兜底逻辑吞掉，判定模型那层**静默失效**，只剩启发式在跑 —— 从日志上几乎看不出来。
+
+    Args:
+        module: 插件模块。
+    """
+    print("\n[15] provider_id 配错时的回退")
+    detection = sys.modules["data.plugins.astrbot_plugin_topic_router.detection"]
+
+    # 配了一个不存在的 ID → 应该回退到当前会话模型
+    fresh_data_root("provider-fallback")
+    ctx = FakeContext()
+    make_plugin(module, ctx, {"mode": "mark", "provider_id": "deepseek/deepseek-v4-flash-NOT-EXIST"})
+    event = FakeEvent("帮我看下硬盘", "aiocqhttp:group:pf")
+    pid, note = await MODULE._resolve_provider(MODULE._ctx(), event)
+    check(
+        "配错 provider_id 时回退到当前会话模型",
+        pid == "deepseek/deepseek-v4-flash" and note == "跟随当前会话",
+        f"{pid!r} / {note!r}",
+    )
+
+    # 配了存在的 ID → 就用它
+    fresh_data_root("provider-ok")
+    ctx2 = FakeContext()
+    make_plugin(module, ctx2, {"mode": "mark", "provider_id": "nvidia/deepseek-ai/deepseek-v4-pro"})
+    event2 = FakeEvent("帮我看下硬盘", "aiocqhttp:group:po")
+    pid2, note2 = await MODULE._resolve_provider(MODULE._ctx(), event2)
+    check(
+        "provider_id 存在时按配置使用",
+        pid2 == "nvidia/deepseek-ai/deepseek-v4-pro" and note2 == "配置指定",
+        f"{pid2!r} / {note2!r}",
+    )
+
+    # 留空 → 跟随当前会话
+    fresh_data_root("provider-empty")
+    ctx3 = FakeContext()
+    make_plugin(module, ctx3, {"mode": "mark", "provider_id": ""})
+    event3 = FakeEvent("帮我看下硬盘", "aiocqhttp:group:pe")
+    pid3, note3 = await MODULE._resolve_provider(MODULE._ctx(), event3)
+    check(
+        "provider_id 留空时跟随当前会话（新默认值）",
+        pid3 == "deepseek/deepseek-v4-flash" and note3 == "跟随当前会话",
+        f"{pid3!r} / {note3!r}",
+    )
+
+    # 配错时最终仍然能完成一次模型判定（回退后照常工作）
+    fresh_data_root("provider-fallback-run")
+    ctx4 = FakeContext()
+    make_plugin(module, ctx4, {"mode": "mark", "provider_id": "不存在的模型"})
+    event4 = FakeEvent("帮我看下硬盘坏了没", "aiocqhttp:group:pf2")
+    async for _ in MODULE.handle_message_v017(event4):
+        pass
+    check(
+        "回退之后模型判定依然执行（不是静默失效）",
+        any(call.get("chat_provider_id") == "deepseek/deepseek-v4-flash" for call in ctx4.calls),
+        str([c.get("chat_provider_id") for c in ctx4.calls]),
+    )
+    del detection
 
 
 async def test_json_parsing(module) -> None:
@@ -1198,6 +1275,7 @@ async def main() -> int:
         await test_entry_points(plugin_main)
         await test_handlers_are_module_level(plugin_main)
         await test_user_prompt_contains_reply(plugin_main)
+        await test_provider_id_fallback(plugin_main)
     except Exception:  # noqa: BLE001
         traceback.print_exc()
         FAILED.append("测试脚本本身抛异常")

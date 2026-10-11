@@ -20,8 +20,8 @@
   "provider_id": {
     "description": "判定用模型 ID",
     "type": "string",
-    "default": "deepseek/deepseek-v4-flash",
-    "hint": "填「提供商来源ID/模型名」，例如 deepseek/deepseek-v4-flash。留空则回退到当前会话使用的模型。插件启动时会把可用的模型 ID 打进日志，串不对就去日志里抄一个。"
+    "default": "",
+    "hint": "留空=跟随当前会话使用的模型（默认，最不容易配错）。想固定成便宜模型就填「提供商来源ID/模型名」，例如 deepseek/deepseek-v4-flash 或 千问/qwen3.8-flash。⚠️ 必须和 AstrBot 里真实存在的 ID 完全一致：插件启动时会把可用 ID 打进日志，填错的话启动日志里会有 ⚠ 告警，且判定会静默退回当前会话模型。"
   },
   "auto_threshold": {
     "description": "自动切换所需置信度",

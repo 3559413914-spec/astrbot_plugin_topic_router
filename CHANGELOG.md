@@ -1,5 +1,34 @@
 # 更新日志
 
+## v0.5.3
+
+**修：`provider_id` 配错时判定模型静默失效（实机踩到）。**
+
+实机日志（2026-10-11）暴露的问题：插件启动时打印
+
+```
+[话题路由器] 已加载 v0.5.1 | 模式 mark | 判定模型 deepseek/deepseek-v4-flash | ...
+```
+
+但同一份日志里 AstrBot 加载的 Provider 实际是 `deepseek/deepseek-flash`（没有 `v4`）。
+这个 ID 不存在，于是 `context.llm_generate()` 抛 `ProviderNotFoundError`，被"失败即延续"
+的兜底逻辑吞掉 —— 结果是**判定模型那层完全没工作，只剩启发式**，而日志上几乎看不出来
+（只在 `_ask_llm` 里留一行 warning）。
+
+三处修改：
+
+1. **`_resolve_provider` 增加存在性校验**：配置的 ID 会先用
+   `provider_manager.get_provider_by_id()` 查一遍；查不到就告警并**回退到当前会话模型**，
+   不再静默失效。顺带把可用的 ID 一起打进告警，方便直接抄。
+2. **启动日志主动告警**：`on_loaded_v017` 里比对"配置的 ID"与"可用列表"，不一致时打印
+   `⚠ 配置的判定模型 'xxx' 不在可用列表里 …`。
+3. **默认值改为留空**（`_conf_schema.json`）：留空 = 跟随当前会话模型，最不容易配错。
+   原来硬写 `deepseek/deepseek-v4-flash` 是在没有对应 Provider 的环境里保证出错。
+
+新增测试 `[15] provider_id 配错时的回退`：配错时回退到当前会话模型、配对时按配置使用、
+留空时跟随会话，以及**回退之后模型判定确实执行了**（不是静默失效）。
+测试 135 → 139 项。
+
 ## v0.5.2
 
 - 修 CHANGELOG 的 Markdown 格式：v0.5.1 小节和 v0.5.0 标题之间补上空行（之前贴在一起，
