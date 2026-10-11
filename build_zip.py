@@ -135,6 +135,45 @@ def check_logo() -> list[str]:
     return problems
 
 
+def check_changelog_format() -> list[str]:
+    """检查 CHANGELOG 的 Markdown 结构。
+
+    出过一次错：新版本小节插到顶部时忘了留空行，标题和上一段正文贴在一起，
+    Markdown 渲染出来就是一坨。这里把两个容易犯的错钉死。
+
+    Returns:
+        问题描述列表；空列表表示合规。
+    """
+    path = PLUGIN_DIR / "CHANGELOG.md"
+    if not path.is_file():
+        return ["缺少 CHANGELOG.md"]
+    lines = path.read_text(encoding="utf-8").splitlines()
+    problems: list[str] = []
+
+    if lines and lines[0].strip() != "# 更新日志":
+        problems.append("CHANGELOG.md 第一行必须是 '# 更新日志'")
+
+    seen: dict[str, int] = {}
+    for index, line in enumerate(lines):
+        if not line.startswith("## v"):
+            continue
+        version = line[3:].strip()
+        if version in seen:
+            problems.append(f"CHANGELOG.md 里 {version} 出现了两次")
+        seen[version] = index
+        if index > 0 and lines[index - 1].strip():
+            problems.append(
+                f"{version} 的标题上一行不是空行（第 {index} 行），渲染会粘在一起"
+            )
+        if index + 1 < len(lines) and lines[index + 1].strip():
+            problems.append(f"{version} 的标题下一行不是空行（第 {index + 2} 行）")
+
+    newest = read_version()
+    if f"## v{newest}" not in path.read_text(encoding="utf-8"):
+        problems.append(f"CHANGELOG.md 里没有当前版本 v{newest} 的小节")
+    return problems
+
+
 def build(output: Path) -> Path:
     """写出 zip。
 
@@ -158,6 +197,10 @@ def build(output: Path) -> Path:
     problems = check_logo()
     if problems:
         raise SystemExit("图标不合规，先改好再打包：\n  - " + "\n  - ".join(problems))
+
+    problems = check_changelog_format()
+    if problems:
+        raise SystemExit("CHANGELOG 格式不合规，先改好再打包：\n  - " + "\n  - ".join(problems))
 
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         # 目录条目是必需的：AstrBot 靠它 + 子条目前缀来推断"压缩包里的根目录"，

@@ -1,8 +1,17 @@
 # 更新日志
+
+## v0.5.2
+
+- 修 CHANGELOG 的 Markdown 格式：v0.5.1 小节和 v0.5.0 标题之间补上空行（之前贴在一起，
+  渲染出来会粘成一坨）；
+- 打包器新增 `check_changelog_format()`：打包前检查首行标题、每个版本小节前后是否有
+  空行、同一版本号是否重复出现、以及是否包含当前版本小节，不合格拒绝打包。
+
 ## v0.5.1
 
 - 作者署名从 `dsh` 改为 GitHub 账号 **[@xunhen](https://github.com/xunhen)**（`metadata.yaml`
   的 `author` 字段与 README 同步）；插件市场上展示的作者名即取此字段。
+
 ## v0.5.0
 
 **为发布到 AstrBot 插件市场做收尾：元数据补全、图标、贡献指南。**
@@ -53,7 +62,6 @@ AstrBot 4.28.1 上验证过，`hint` 模式依赖的 `TextPart.mark_as_temp()` �
 - 三个关键设计：① 两个信号都指向新话题才敢判新话题；② 不拿"字面不重叠"当证据（中文追问
   字面相似度天然为 0）；③ 判定是旁路，失败不影响正常聊天；
 - 原来的「它能做什么」里那段较细的两层机制说明删掉，改为指向「原理」，避免重复。
-
 
 ## v0.4.0
 
@@ -111,7 +119,6 @@ AstrBot 4.28.1 上验证过，`hint` 模式依赖的 `TextPart.mark_as_temp()` �
   长句零重叠仍直接判新话题、冷启动优先于短句规则、提示词包含回复等用例；
 - `tests/test_portability.py` 补 `on_llm_response` 桩装饰器。
 
-
 ## v0.3.2
 
 **按官方文档与源码核实，修正部署文档里几处不准的说法。**
@@ -154,21 +161,20 @@ epo 地址，help 用多行格式
   列出全部子指令。
 - 测试脚本去掉剩余的本机绝对路径写法，测试说明同时给出 Windows / Linux-macOS 两种跑法。
 
-
 ## v0.2.2
 
 **可移植性收尾：确认别人也能用。**
 
 - 测试脚本不再写死本机绝对路径：AstrBot 运行路径改为自动探测
   （ASTRBOT_APP_PATH / ASTRBOT_SITE_PACKAGES 环境变量优先，其次桌面版默认位置）；
-  erify_zip_install.py 找不到上游 v4.28.1 源码时给出明确指引并跳过，而不是报错。
+  
+erify_zip_install.py 找不到上游 v4.28.1 源码时给出明确指引并跳过，而不是报错。
 - 新增 	ests/test_portability.py：用**桩模块**隔离 AstrBot 依赖，因此任意 Python 3.10+
   都能跑。它同时模拟两种 handler 派发契约（绑定方法 / 未绑定函数）与零参数调用
   （on_astrbot_loaded 的真实形态），16 项断言全过 —— 这是别人装上也能用的证据。
 - 新增 
 equirements.txt（本插件零第三方依赖）与 README「谁能用 / 使用条件」一节，
   写清版本、Runner、Provider 三个前置条件。
-
 
 ## v0.2.1
 
@@ -197,7 +203,6 @@ on_loaded_v017 全部改为**模块级函数**，签名是 (*args, **kwargs)，�
 - 新增回归用例 [12] handler 的形态：逐个断言四个 handler 是模块级、无必填参数，
   并像 AstrBot 那样**零参数调用 on_loaded_v017()**、以三种方式调用消息 handler。
 - 状态仍全部在模块级 RUNTIME / _CTX 上。
-
 
 ## v0.2.0
 
@@ -324,5 +329,3 @@ if md:
 
 - 首个版本：启发式 + 便宜模型的二层话题判定，`off / mark / hint / auto` 四种模式，
   `/topic` 指令，按会话保存的话题状态。
-
-
