@@ -1,3 +1,5 @@
+<img src="logo.png" alt="话题路由器" width="120" align="right">
+
 # 话题路由器 · Topic Router
 
 > 让机器人自己判断用户这句话是**接着上一个话题**，还是**开了新话题**。
@@ -555,6 +557,11 @@ Linux 上的 AstrBot 解包后会抛 `FileNotFoundError`；此外它还会把 `t
 > 少数环境的 AstrBot 派发 handler 时不绑定实例，`self` 会是事件对象，任何 `self.xxx` 都会抛
 > `AttributeError`，而入口的 `except` 会把它静默吞掉（表现为"插件在跑但什么都不输出"）。
 > 模块级写法对两种派发契约都安全。
+
+## 贡献
+
+改代码前请先读 [CONTRIBUTING.md](CONTRIBUTING.md) 的「改代码前必读」——里面六条约束都是
+线上事故换来的（比如 handler 为什么必须是模块级函数）。
 
 ## 许可
 

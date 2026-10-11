@@ -1,5 +1,31 @@
 name: astrbot_plugin_topic_router
-desc: 话题路由器 —— 让机器人自己判断用户这句话是「接着上一个话题」还是「开了新话题」。默认只标记不改上下文，确认准确后再开启自动翻篇。零第三方依赖。
+display_name: 话题路由器
+short_desc: 让机器人自己判断这句话是接着上一个话题，还是开了新话题
+desc: |-
+  让机器人自己判断用户这句话是「接着上一个话题」还是「开了新话题」。
+
+  AstrBot 的对话是一整条上下文。当用户在同一会话里从「帮我画个电路板」跳到「顺便看看 NAS 硬盘」时，
+  模型会把两件事混在一起回答；等上下文攒到 50 条被压缩，话题边界就彻底糊了。
+
+  这个插件在每条用户消息到达时做一次轻量判定，输出「延续 / 新话题」+ 置信度，然后按你选的模式行动。
+  默认模式 mark 只记录、不改任何上下文 —— 先看几天它判得准不准，再决定要不要自动翻篇。
+
+  特性：
+  - 判定分两层：本地免费启发式，拿不准时才问一次便宜模型；失败一律退化成「延续」，绝不影响正常回复
+  - 四种模式：off / mark（默认）/ hint / auto
+  - 零第三方依赖
+  - 自带真实数据评测台，阈值可以拿你自己的聊天记录来调
+  - 平台无关：任何能到达 LLM 的消息都适用
+version: v0.5.0
+author: dsh
+repo: https://github.com/3559413914-spec/astrbot_plugin_topic_router
+social_link: https://github.com/3559413914-spec
+tags:
+  - 话题
+  - 上下文
+  - 会话
+  - 多轮对话
+  - topic
 help: |-
   指令：
   /topicweave 查看当前话题状态
@@ -11,6 +37,3 @@ help: |-
 
   配置里 mode 默认 mark（只记录、不改上下文），
   判定准确后再改成 auto（自动开新对话，旧对话完整留档）。
-version: v0.4.1
-author: dsh
-repo: https://github.com/3559413914-spec/astrbot_plugin_topic_router

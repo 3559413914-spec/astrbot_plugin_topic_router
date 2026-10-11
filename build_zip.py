@@ -33,6 +33,7 @@ INCLUDE_FILES = (
     "state.py",
     "metadata.yaml",
     "_conf_schema.json",
+    "logo.png",
     "README.md",
     "CHANGELOG.md",
     "requirements.txt",
@@ -107,6 +108,33 @@ def check_version_consistency() -> list[str]:
     return problems
 
 
+def check_logo() -> list[str]:
+    """检查 logo.png 是否符合 AstrBot 的推荐规格。
+
+    官方要求：插件目录下的 `logo.png`，长宽比 1:1，推荐 256x256。元数据里**没有**
+    logo 字段，靠的就是这个文件名，所以规格错了市场卡片会很难看。
+
+    Returns:
+        问题描述列表；空列表表示合规。
+    """
+    path = PLUGIN_DIR / "logo.png"
+    if not path.is_file():
+        return ["缺少 logo.png（插件目录下 1:1 图片，推荐 256x256）"]
+    header = path.read_bytes()[:24]
+    if header[:8] != b"\x89PNG\r\n\x1a\n":
+        return ["logo.png 不是有效的 PNG 文件"]
+    width = int.from_bytes(header[16:20], "big")
+    height = int.from_bytes(header[20:24], "big")
+    problems = []
+    if width != height:
+        problems.append(f"logo.png 不是 1:1（当前 {width}x{height}）")
+    if width != 256:
+        problems.append(f"logo.png 建议 256x256（当前 {width}x{height}）")
+    if path.stat().st_size > 512 * 1024:
+        problems.append(f"logo.png 过大（{path.stat().st_size // 1024}KB），建议压到 512KB 内")
+    return problems
+
+
 def build(output: Path) -> Path:
     """写出 zip。
 
@@ -126,6 +154,10 @@ def build(output: Path) -> Path:
         raise SystemExit(
             "版本信息不一致，先改齐再打包：\n  - " + "\n  - ".join(problems)
         )
+
+    problems = check_logo()
+    if problems:
+        raise SystemExit("图标不合规，先改好再打包：\n  - " + "\n  - ".join(problems))
 
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         # 目录条目是必需的：AstrBot 靠它 + 子条目前缀来推断"压缩包里的根目录"，
