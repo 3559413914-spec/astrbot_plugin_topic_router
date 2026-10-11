@@ -1,4 +1,8 @@
 # 更新日志
+## v0.5.1
+
+- 作者署名从 `dsh` 改为 GitHub 账号 **[@xunhen](https://github.com/xunhen)**（`metadata.yaml`
+  的 `author` 字段与 README 同步）；插件市场上展示的作者名即取此字段。
 ## v0.5.0
 
 **为发布到 AstrBot 插件市场做收尾：元数据补全、图标、贡献指南。**

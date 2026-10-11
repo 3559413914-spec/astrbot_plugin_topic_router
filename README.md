@@ -563,6 +563,8 @@ Linux 上的 AstrBot 解包后会抛 `FileNotFoundError`；此外它还会把 `t
 改代码前请先读 [CONTRIBUTING.md](CONTRIBUTING.md) 的「改代码前必读」——里面六条约束都是
 线上事故换来的（比如 handler 为什么必须是模块级函数）。
 
+作者：[@xunhen](https://github.com/xunhen)。欢迎提 Issue 和 PR。
+
 ## 许可
 
 MIT，见 [LICENSE](LICENSE)。
