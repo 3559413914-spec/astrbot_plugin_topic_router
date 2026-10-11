@@ -1,5 +1,25 @@
 # 更新日志
 
+## v0.6.1
+
+**修掉 README 里一处死链，并补上 AstrBot 版本要求。**
+
+- README 原来写"zip 从 Releases 下载"，但本仓库**没有发布任何 Release**（0 个 tag / 0 个 release），
+  那个链接是 404。改为说明两种真实可行的取包方式：市场安装，或本地 `python build_zip.py`；
+  并确认了 **GitHub 的「Download ZIP」产物也能直接装**（见下）。
+- 实测三种压缩包结构都能被 AstrBot 正确识别（复刻上游 v4.28.1 的
+  `_resolve_archive_root_dir` + `find_plugin_metadata_entry` 验证）：
+
+  | 包结构 | 解析出的包根 | 结果 |
+  | --- | --- | --- |
+  | `build_zip.py` 产物（插件目录当根） | `astrbot_plugin_topic_router` | ✅ |
+  | GitHub Download ZIP（仓库名-分支当根） | `astrbot_plugin_topic_router-main` | ✅ |
+  | 文件直接放包根 | 空 | ✅ |
+
+- **填上 `astrbot_version: ">=4.24"`**：之前一直留空，理由是"没验证过的下限不该乱填"。
+  现在有依据了——`hint` 模式依赖的 `TextPart.mark_as_temp()` 是 4.24+ 才有，且 4.28.1 上已跑通。
+  填上后，过老的 AstrBot 会在安装时就被拦下，而不是运行时莫名失败。
+
 ## v0.6.0
 
 **已上架 AstrBot 插件市场；仓库地址迁移到 `xun-hen`；README 安装章重排。**

@@ -154,8 +154,16 @@ AstrBot 的对话是一整条上下文。当用户在同一个会话里从"帮�
 3. 等日志出现 `Installed plugin astrbot_plugin_topic_router-... successfully.`；
 4. 在插件列表确认已**启用**，再进 **插件配置** 填 `provider_id`。
 
-zip 从 [Releases](https://github.com/xun-hen/astrbot_plugin_topic_router/releases)
-下载，或用仓库里的 `python build_zip.py` 自己打。
+zip 从哪来：本仓库**不提供预编译的 zip 附件**（市场装的就是最新版）。要从文件安装就自己打一个：
+
+```bash
+git clone https://github.com/xun-hen/astrbot_plugin_topic_router
+cd astrbot_plugin_topic_router
+python build_zip.py            # 在桌面生成 astrbot_plugin_topic_router-<版本>.zip
+```
+
+也可以直接下 GitHub 的源码压缩包（Code → Download ZIP）——仓库根目录就是插件目录，
+AstrBot 会自己把那层目录拍平，能正常识别。
 
 > ⚠️ **不要用系统自带的"压缩文件夹"重新打包**。Windows 的压缩工具会写反斜杠条目名，
 > 装到 Linux 上的 AstrBot 会直接失败（`FileNotFoundError`）。要自己打包请用
