@@ -1,5 +1,34 @@
 # 更新日志
 
+## v0.6.0
+
+**已上架 AstrBot 插件市场；仓库地址迁移到 `xun-hen`；README 安装章重排。**
+
+### 插件已上架市场
+
+README 的安装部分重写：**方式 A = 从插件市场安装**（最简单，推荐），
+**方式 B = WebUI 上传 zip**（离线/内网/指定版本），
+**方式 C = 按部署类型装到对应目录**（Docker / Windows 桌面 / 飞牛 NAS / 源码，降为 C1~C4 子节）。
+
+原来的编号有问题：A（上传）和 B（Docker）在同一个层级，但一个是"装法"、一个是"部署类型"，
+读者按顺序看会乱。现在改成先讲装法、再讲"你的部署类型该放哪个目录"。
+
+### 仓库地址迁移到 xun-hen
+
+仓库已从 `3559413914-spec` 迁移到 **`xun-hen/astrbot_plugin_topic_router`**（旧地址 GitHub 会
+重定向，但文档里不该再写旧地址）。同步更新：
+
+- `metadata.yaml` 的 `repo` 与 `social_link`；
+- README 里的 Releases 链接；
+- 作者署名统一为 **[@xun-hen](https://github.com/xun-hen)**（寻痕）。
+
+> 注意：`xunhen`（无连字符）是**另一个人的账号**，之前误用过这个名字，本版已全部纠正。
+
+### 本地 git 身份
+
+这个仓库里曾经有仓库级的 `user.name = 3559413914-spec`，会覆盖全局身份，导致提交作者一直是旧名字。
+本版删掉该仓库级配置，之后的提交使用全局身份 `xun-hen`。
+
 ## v0.5.3
 
 **修：`provider_id` 配错时判定模型静默失效（实机踩到）。**
@@ -38,7 +67,7 @@
 
 ## v0.5.1
 
-- 作者署名从 `dsh` 改为 GitHub 账号 **[@xunhen](https://github.com/xunhen)**（`metadata.yaml`
+- 作者署名从 `dsh` 改为 GitHub 账号 **[@xun-hen](https://github.com/xun-hen)**（`metadata.yaml`
   的 `author` 字段与 README 同步）；插件市场上展示的作者名即取此字段。
 
 ## v0.5.0

@@ -16,10 +16,10 @@ desc: |-
   - 零第三方依赖
   - 自带真实数据评测台，阈值可以拿你自己的聊天记录来调
   - 平台无关：任何能到达 LLM 的消息都适用
-version: v0.5.3
-author: xunhen
-repo: https://github.com/3559413914-spec/astrbot_plugin_topic_router
-social_link: https://github.com/3559413914-spec
+version: v0.6.0
+author: xun-hen
+repo: https://github.com/xun-hen/astrbot_plugin_topic_router
+social_link: https://github.com/xun-hen
 tags:
   - 话题
   - 上下文

@@ -61,7 +61,7 @@ AstrBot 的对话是一整条上下文。当用户在同一个会话里从"帮�
 - [原理](#原理)
 - [它能做什么](#它能做什么)
 - [安装：先选你的部署方式](#安装先选你的部署方式)
-  - [方式 A：WebUI 上传（所有平台通用，推荐）](#方式-awebui-上传所有平台通用推荐)
+  - [方式 A：WebUI 上传（所有平台通用，推荐）](#方式-a从插件市场安装最简单推荐)
   - [方式 B：Docker 部署的 AstrBot](#方式-bdocker-部署的-astrbot)
   - [方式 C：Windows 桌面客户端](#方式-cwindows-桌面客户端)
   - [方式 D：飞牛 NAS（fnOS）](#方式-d飞牛-nasfnos)
@@ -125,44 +125,67 @@ AstrBot 的对话是一整条上下文。当用户在同一个会话里从"帮�
 > Windows 的 `~` 是 `C:\Users\<你的用户名>`；macOS / Linux 的 `~` 是 `/Users/<你>`、
 > `/home/<你>`。
 
-**装完生效方式**：WebUI 上传安装会**自动加载**，一般不需要重启；升级已装的版本时，
+**装完生效方式**：市场安装和 WebUI 上传都会**自动加载**，一般不需要重启；但升级已装的版本时，
 建议**重启一次 AstrBot 进程**（原因见 [排错](#排错)：热重载不会清掉内存里的旧注册项）。
 
 ---
 
-### 方式 A：WebUI 上传（所有平台通用，推荐）
+### 方式 A：从插件市场安装（最简单，推荐）
 
-不需要碰命令行、不需要进容器，**所有部署方式都适用**。
+插件已上架 AstrBot 插件市场，**一行命令都不需要**：
 
 1. 打开 AstrBot 管理面板（默认 `http://<你的IP>:6185`，Docker 部署时**不能用 localhost**）；
-2. 左侧进 **插件 → 插件**（地址是 `/extension/plugins`）；
-3. 右上角 **安装插件 → 从文件安装**，选择 `astrbot_plugin_topic_router-<版本>.zip`；
-4. 等日志出现 `Installed plugin astrbot_plugin_topic_router-... successfully.`；
-5. 在插件列表里确认它已**启用**，然后进 **插件配置** 填 `provider_id`（见下一节）。
+2. 左侧进 **插件 → 插件**，切到顶部的 **插件市场** 标签（地址 `/extension/plugins/market`）；
+3. 搜索 **话题路由器**（或 `topic_router`），点安装；
+4. 装完在 **插件配置** 里确认 `provider_id`（见[装完之后的配置](#装完之后的配置)）。
 
-也可以在 **插件市场** 里搜名字安装（如果它已上架）。
+也可以直接在市场网页端看：[AstrBot 插件市场](https://cloud.astrbot.app/)。
+
+> 市场装的是 release 包，会自动加载，一般不需要重启。
+
+---
+
+### 方式 B：WebUI 上传 zip（离线 / 内网 / 想装指定版本时用）
+
+不用碰命令行、不用进容器，**所有部署方式都适用**。
+
+1. 管理面板 → **插件 → 插件**（`/extension/plugins`）；
+2. 右上角 **安装插件 → 从文件安装**，选择 `astrbot_plugin_topic_router-<版本>.zip`；
+3. 等日志出现 `Installed plugin astrbot_plugin_topic_router-... successfully.`；
+4. 在插件列表确认已**启用**，再进 **插件配置** 填 `provider_id`。
+
+zip 从 [Releases](https://github.com/xun-hen/astrbot_plugin_topic_router/releases)
+下载，或用仓库里的 `python build_zip.py` 自己打。
 
 > ⚠️ **不要用系统自带的"压缩文件夹"重新打包**。Windows 的压缩工具会写反斜杠条目名，
-> 装到 Linux 上的 AstrBot 会直接失败（`FileNotFoundError`）。要自己打包请用仓库里的
+> 装到 Linux 上的 AstrBot 会直接失败（`FileNotFoundError`）。要自己打包请用
 > `python build_zip.py`，详见 [README 末尾](#自己打包)。
 >
 > **AstrBot 认可的包结构**（源码核实）：`metadata.yaml`（或 `.yml`）必须在**插件根目录**，
 > 且至少包含非空的 `name` / `desc` / `version` / `author` 四个字段，UTF-8 编码、≤1MB；
 > `name` 必须是合法 Python 标识符（它会变成 `data/plugins/<name>` 目录名）。**外层套一层
 > 目录可以**（AstrBot 会把那层拍平），多层嵌套没有官方承诺。
-> 安装成功后会**立即加载**，一般不需要重启；插件页卡片上的刷新图标是"重载插件"，加载失败
-> 的插件会出现在"加载失败插件"列表里，旁边有"重载"按钮。
+> 安装成功后会**立即加载**；插件页卡片上的刷新图标是"重载插件"，加载失败的插件会出现在
+> "加载失败插件"列表里，旁边有"重载"按钮。
 
 ---
 
-### 方式 B：Docker 部署的 AstrBot
+### 方式 C：按你的部署类型装到对应目录
+
+如果你的 AstrBot 是 Docker / 桌面客户端 / 飞牛 NAS / 源码部署，且不想用上面两种方式，
+就按下面的对照表找到数据目录，把插件放进去，然后跳到对应小节。
+
+**装完生效方式**：市场安装和 WebUI 上传都会**自动加载**，一般不需要重启；但升级已装的版本时，
+建议**重启一次 AstrBot 进程**（原因见 [排错](#排错)：热重载不会清掉内存里的旧注册项）。
+
+#### C1. Docker 部署的 AstrBot
 
 官方镜像 `soulter/astrbot`，数据卷挂到容器内 `/AstrBot/data`。
 
-**B1. 用 WebUI 上传（推荐）**：直接照 [方式 A](#方式-awebui-上传所有平台通用推荐) 走，
+**最省事的做法**：直接照 [方式 A](#方式-a从插件市场安装最简单推荐) 走，
 宿主机不需要任何操作。
 
-**B2. 手动把插件目录拷进容器**：
+**放进容器**：
 
 ```bash
 # 1) 看容器名（官方示例里叫 astrbot）
@@ -178,7 +201,7 @@ docker restart <容器名>
 docker logs -f <容器名> | grep -i topic
 ```
 
-**B3. 直接在宿主机放（不用进容器）**：因为 `/AstrBot/data` 就是挂载点，找到你启动容器时
+**直接放宿主机（不用进容器）**：因为 `/AstrBot/data` 就是挂载点，找到你启动容器时
 `-v` 的那一侧目录，把插件目录放进去即可：
 
 ```bash
@@ -220,12 +243,12 @@ services:
 
 ---
 
-### 方式 C：Windows 桌面客户端
+#### C2. Windows 桌面客户端
 
 [AstrBot-desktop](https://github.com/AstrBotDevs/AstrBot-desktop) 支持 Windows / macOS / Linux，
 下载对应安装包（`.exe` / `.dmg` / `.deb` / `.rpm`）装完启动即可，数据在 `~/.astrbot`。
 
-**C1. WebUI 上传（推荐）**：桌面客户端自带管理面板，按 [方式 A](#方式-awebui-上传所有平台通用推荐)
+**推荐做法**：桌面客户端自带管理面板，按 [方式 A](#方式-a从插件市场安装最简单推荐)
 操作。
 
 > ⚠️ 桌面客户端的管理面板默认**只监听本机**（`http://127.0.0.1:6185`）。想让别的设备访问，
@@ -233,7 +256,7 @@ services:
 > （端口保持 `6185`），完全退出并重启客户端，再从其他设备访问 `http://<本机IP>:6185/`。
 > 也可以用环境变量 `ASTRBOT_DASHBOARD_HOST` / `ASTRBOT_DASHBOARD_PORT` 覆盖（优先级更高）。
 
-**C2. 直接放目录**：
+**直接放目录**：
 
 1. 完全退出 AstrBot 桌面客户端（托盘图标也要退出）；
 2. 把 `astrbot_plugin_topic_router` 整个目录复制到：
@@ -252,7 +275,7 @@ python tests\test_portability.py
 
 ---
 
-### 方式 D：飞牛 NAS（fnOS）
+#### C3. 飞牛 NAS（fnOS）
 
 fnOS 上的 AstrBot 有两种常见装法，**先确认你是哪种**，因为重启方式完全不同：
 
@@ -261,7 +284,7 @@ fnOS 上的 AstrBot 有两种常见装法，**先确认你是哪种**，因为�
 | **fnOS 原生应用（FPK）** | 应用中心里有 AstrBot 卡片；SSH 里能看到 `/vol1/@apphome/astrbot/` | 应用中心卡片里的**停用 → 启用**（原生应用不支持 `systemctl`，也不要用 docker 命令） |
 | **Docker 部署** | 自己用 compose / `docker run` 起的 | `docker restart <容器名>` |
 
-**D1. 装插件（两种装法都一样，优先走 WebUI）**
+**装插件**
 
 1. 浏览器打开 `http://<NAS 的 IP>:6185`，用户名默认 `astrbot`；
    - 首次登录的初始密码在日志里：`/vol1/@appdata/astrbot/data/logs/astrbot.log` 搜 `Initial password`；
@@ -270,7 +293,7 @@ fnOS 上的 AstrBot 有两种常见装法，**先确认你是哪种**，因为�
 3. 在 **插件配置** 里填 `provider_id`，保存；
 4. 如果日志里没有出现 `模块已导入 <版本>`，按上表**停用再启用**（或重启容器）。
 
-**D2. 手动放文件（不推荐，仅在 WebUI 上传不可用时）**
+**手动放文件（不推荐）**
 
 原生应用的运行时数据在应用私有目录里，**文件管理器的「应用文件」进不去**（它只展示应用
 用 `data-share` 声明的共享目录）。要手动放就得走 SSH：
@@ -301,7 +324,7 @@ ls /vol1/@appdata/astrbot/data/plugins/astrbot_plugin_topic_router/metadata.yaml
 > 原生应用手拷文件最常见的坑。
 > ⚠️ 部分 fnOS 版本的应用数据根目录不在 `/vol1/@appdata`，所以第 2 步的 `readlink` 不要跳过。
 
-**D3. 数据安全（升级 / 卸载 / 备份）**
+**数据安全（升级 / 卸载 / 备份）**
 
 - **升级 AstrBot 应用不会删数据**：升级流程只做数据与配置迁移，并会先停应用再启；
 - **卸载时要选「保留数据」**：fnOS 卸载向导通常给「保留数据（推荐）/ 删除所有数据」二选一，
@@ -315,9 +338,9 @@ ls /vol1/@appdata/astrbot/data/plugins/astrbot_plugin_topic_router/metadata.yaml
 
 ---
 
-### 方式 E：macOS / Linux 源码部署
+#### C4. macOS / Linux 源码部署
 
-**E0. 如果你还没装 AstrBot**，两种更省事的选择：
+**还没装 AstrBot 的话**，两种更省事的选择：
 
 - **一键启动器**（Windows / macOS / Linux）：从
   [AstrBotDevs/astrbot-launcher](https://github.com/AstrBotDevs/astrbot-launcher) 的 Releases
@@ -325,7 +348,7 @@ ls /vol1/@appdata/astrbot/data/plugins/astrbot_plugin_topic_router/metadata.yaml
   终端执行 `xattr -dr com.apple.quarantine "/Applications/AstrBot Launcher.app"` 后重开。
 - **手动部署**（下面这段）：适合服务器与想完全掌控环境的人。
 
-**E1. 手动部署**（官方 [手动部署文档](https://docs.astrbot.app/deploy/astrbot/cli.html)）：
+**手动部署**（官方 [手动部署文档](https://docs.astrbot.app/deploy/astrbot/cli.html)）：
 
 要求 **Python ≥ 3.12**（AstrBot v4 的硬性要求；旧版安装脚本另要求 3.10–3.13，两者不是一回事）。
 
@@ -563,7 +586,7 @@ Linux 上的 AstrBot 解包后会抛 `FileNotFoundError`；此外它还会把 `t
 改代码前请先读 [CONTRIBUTING.md](CONTRIBUTING.md) 的「改代码前必读」——里面六条约束都是
 线上事故换来的（比如 handler 为什么必须是模块级函数）。
 
-作者：[@xunhen](https://github.com/xunhen)。欢迎提 Issue 和 PR。
+作者：[@xun-hen](https://github.com/xun-hen)。欢迎提 Issue 和 PR。
 
 ## 许可
 
