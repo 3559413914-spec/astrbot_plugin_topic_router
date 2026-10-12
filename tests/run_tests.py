@@ -442,7 +442,7 @@ async def test_heuristics(module) -> None:
         module: 插件模块。
     """
     print("\n[2] 启发式判定")
-    detection = sys.modules["data.plugins.astrbot_plugin_topic_router.detection"]
+    detection = sys.modules["data.plugins.astrbot_plugin_topic_router_pro.detection"]
     state = SimpleNamespace(
         label="电子吧唧的电路板设计",
         summary="在聊怎么画板子、选元件",
@@ -528,7 +528,7 @@ async def test_user_prompt_contains_reply(module) -> None:
         module: 插件模块。
     """
     print("\n[14] 判定提示词内容")
-    detection = sys.modules["data.plugins.astrbot_plugin_topic_router.detection"]
+    detection = sys.modules["data.plugins.astrbot_plugin_topic_router_pro.detection"]
     state = SimpleNamespace(
         label="飞牛 NAS 安装",
         summary="在装飞牛系统",
@@ -574,7 +574,7 @@ async def test_provider_id_fallback(module) -> None:
         module: 插件模块。
     """
     print("\n[15] provider_id 配错时的回退")
-    detection = sys.modules["data.plugins.astrbot_plugin_topic_router.detection"]
+    detection = sys.modules["data.plugins.astrbot_plugin_topic_router_pro.detection"]
 
     # 配了一个不存在的 ID → 应该回退到当前会话模型
     fresh_data_root("provider-fallback")
@@ -634,7 +634,7 @@ async def test_json_parsing(module) -> None:
         module: 插件模块。
     """
     print("\n[3] 模型输出解析")
-    detection = sys.modules["data.plugins.astrbot_plugin_topic_router.detection"]
+    detection = sys.modules["data.plugins.astrbot_plugin_topic_router_pro.detection"]
     heur = detection.HeuristicResult(
         verdict=detection.VERDICT_CONTINUE,
         confidence=0.5,
@@ -922,7 +922,7 @@ async def test_state_lifecycle(module) -> None:
     check("状态文件已写出", "states" in saved and umo in saved["states"])
     check("状态文件有版本号", saved.get("version") == 1)
 
-    from data.plugins.astrbot_plugin_topic_router.state import TopicStore
+    from data.plugins.astrbot_plugin_topic_router_pro.state import TopicStore
 
     reloaded = TopicStore(state_store().path)
     check("重新载入后开关还在", reloaded.get(umo).disabled is True)
@@ -1257,10 +1257,10 @@ async def main() -> int:
     tmp_root = Path(tempfile.mkdtemp(prefix="topic-router-test-"))
     try:
         install_plugin_as_package(tmp_root)
-        import data.plugins.astrbot_plugin_topic_router.main as plugin_main
+        import data.plugins.astrbot_plugin_topic_router_pro.main as plugin_main
 
         global MODULE
-        MODULE = sys.modules["data.plugins.astrbot_plugin_topic_router.router"]
+        MODULE = sys.modules["data.plugins.astrbot_plugin_topic_router_pro.router"]
 
         await test_metadata(plugin_main, tmp_root)
         await test_heuristics(plugin_main)

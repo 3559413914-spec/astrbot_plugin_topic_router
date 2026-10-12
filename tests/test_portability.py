@@ -449,7 +449,7 @@ async def main() -> int:
     sys.path.insert(0, str(tmp_root))
 
     try:
-        import data.plugins.astrbot_plugin_topic_router.router as mod
+        import data.plugins.astrbot_plugin_topic_router_pro.router as mod
 
         global MOD, _DATA_ROOT
         MOD = mod

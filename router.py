@@ -1,4 +1,4 @@
-"""astrbot_plugin_topic_router —— 让机器人自己判断"这是新话题还是上一个话题"。
+"""astrbot_plugin_topic_router_pro —— 让机器人自己判断"这是新话题还是上一个话题"。
 
 ## 这个文件的写法是被实机逼出来的，改之前请先读完这段
 
@@ -87,7 +87,7 @@ from .detection import (  # noqa: E402
 )
 from .state import TopicStore  # noqa: E402
 
-PLUGIN_NAME = "astrbot_plugin_topic_router"
+PLUGIN_NAME = "astrbot_plugin_topic_router_pro"
 
 MODE_OFF = "off"
 MODE_MARK = "mark"

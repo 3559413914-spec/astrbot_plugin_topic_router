@@ -1,5 +1,5 @@
-name: astrbot_plugin_topic_router
-display_name: 话题路由器
+name: astrbot_plugin_topic_router_pro
+display_name: 话题路由器PRO
 short_desc: 让机器人自己判断这句话是接着上一个话题，还是开了新话题
 desc: |-
   让机器人自己判断用户这句话是「接着上一个话题」还是「开了新话题」。
@@ -16,7 +16,7 @@ desc: |-
   - 零第三方依赖
   - 自带真实数据评测台，阈值可以拿你自己的聊天记录来调
   - 平台无关：任何能到达 LLM 的消息都适用
-version: v0.6.1
+version: v0.7.0
 author: xun-hen
 repo: https://github.com/xun-hen/astrbot_plugin_topic_router
 astrbot_version: ">=4.24"

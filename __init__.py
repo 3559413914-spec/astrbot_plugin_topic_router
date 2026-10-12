@@ -1,4 +1,4 @@
-"""astrbot_plugin_topic_router 包入口。"""
+"""astrbot_plugin_topic_router_pro 包入口。"""
 
 from __future__ import annotations
 

@@ -1,7 +1,7 @@
 """把插件打包成 AstrBot 能正确安装的 zip。
 
 为什么不用 Windows 的 `Compress-Archive`：它会用反斜杠写条目名
-（`astrbot_plugin_topic_router\\detection.py`）。Linux 上 `os.path.normpath`
+（`astrbot_plugin_topic_router_pro\\detection.py`）。Linux 上 `os.path.normpath`
 不把反斜杠当分隔符（它是合法文件名字符），于是解包后得不到预期的目录结构，
 AstrBot 的收尾步骤 `_finalize_extracted_archive` 会在 `os.listdir(插件目录)` 上
 抛 FileNotFoundError。这里用 zipfile 手工写正斜杠条目，顺便保证：
@@ -23,7 +23,7 @@ import zipfile
 from pathlib import Path
 
 PLUGIN_DIR = Path(__file__).resolve().parent
-PACKAGE_NAME = "astrbot_plugin_topic_router"
+PACKAGE_NAME = "astrbot_plugin_topic_router_pro"
 # 打进包里的内容；tests/ 只在本地跑，不进安装包
 INCLUDE_FILES = (
     "__init__.py",
@@ -66,13 +66,13 @@ def default_output() -> Path:
     * 放在插件目录内还会让"重新打包"把上一个包一起压进去。
 
     桌面在工作区之外，实测能稳定留下。包**内部**的目录名仍然是
-    `astrbot_plugin_topic_router/`，压缩包本身叫什么不影响 AstrBot 识别
+    `astrbot_plugin_topic_router_pro/`，压缩包本身叫什么不影响 AstrBot 识别
     （它看 metadata.yaml 里的 `name`）。
 
     Returns:
         输出路径。
     """
-    return Path.home() / "Desktop" / f"astrbot_plugin_topic_router-{read_version()}.zip"
+    return Path.home() / "Desktop" / f"astrbot_plugin_topic_router_pro-{read_version()}.zip"
 
 
 def check_version_consistency() -> list[str]:

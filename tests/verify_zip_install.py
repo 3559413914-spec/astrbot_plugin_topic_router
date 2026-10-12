@@ -1,13 +1,13 @@
 """验证 AstrBot v4.28.1 的 zip 安装流程，解释 NAS 上那次 FileNotFoundError。
 
 结论先说：上传的包里如果**没有目录条目**，`_resolve_archive_root_dir` 仍然会推断出
-一个根目录名 `astrbot_plugin_topic_router`，但解包时没有任何条目让 `extractall`
-去创建这个目录，于是收尾步骤 `os.listdir(<target>/astrbot_plugin_topic_router)`
+一个根目录名 `astrbot_plugin_topic_router_pro`，但解包时没有任何条目让 `extractall`
+去创建这个目录，于是收尾步骤 `os.listdir(<target>/astrbot_plugin_topic_router_pro)`
 直接抛 FileNotFoundError —— 就是你日志里那条。
 
 所以安装包必须满足两点：
 1. 条目名用正斜杠（Linux 上反斜杠是合法文件名字符，不是分隔符）；
-2. 带上 `astrbot_plugin_topic_router/` 这个目录条目，让解包真的建出该目录。
+2. 带上 `astrbot_plugin_topic_router_pro/` 这个目录条目，让解包真的建出该目录。
 
 这个脚本用官方 v4.28.1 的代码、把模块内的 `os` 换成 POSIX 语义替身，在 Windows
 上复现 Linux 的行为。
@@ -51,7 +51,7 @@ def _read_version() -> str:
 
 
 REAL_ZIP = (
-    Path.home() / "Desktop" / f"astrbot_plugin_topic_router-{_read_version()}.zip"
+    Path.home() / "Desktop" / f"astrbot_plugin_topic_router_pro-{_read_version()}.zip"
 )
 
 # AstrBot v4.28.1 的 zip_updater.py：用来在 POSIX 语义下复现/验证安装流程。
@@ -282,7 +282,7 @@ def run_extract(
 
     if posix_missing_dir_entry:
         # 正斜杠条目、但没有目录条目 —— Linux 的 extractall 只写文件，不会创建
-        # `astrbot_plugin_topic_router` 这一层目录（Windows 会顺手建，这正是它本地
+        # `astrbot_plugin_topic_router_pro` 这一层目录（Windows 会顺手建，这正是它本地
         # 侥幸通过、到了 NAS 才炸的原因）。这里把 target 留空来等价表达这一点，
         # 然后按 Linux 解析出的根目录跑官方收尾逻辑。
         with zipfile.ZipFile(zip_path) as zf:

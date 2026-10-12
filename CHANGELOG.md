@@ -1,5 +1,33 @@
 # 更新日志
 
+## v0.7.0
+
+**改名为「话题路由器 PRO」（内部标识 `astrbot_plugin_topic_router_pro`）。**
+
+展示名与内部名一起改了。内部名变化会连带影响这些位置（都已同步）：
+
+| 位置 | 变化 |
+| --- | --- |
+| 插件目录 | `data/plugins/astrbot_plugin_topic_router_pro/` |
+| 导入路径 | `data.plugins.astrbot_plugin_topic_router_pro.router` |
+| 状态文件 | `data/plugin_data/astrbot_plugin_topic_router_pro/topic_state.json` |
+| 打包产物 | `astrbot_plugin_topic_router_pro-<版本>.zip` |
+| 日志前缀 | `[astrbot_plugin_topic_router_pro]` |
+| 市场展示名 | 话题路由器PRO |
+
+⚠️ **这是一次不兼容变更，老用户需要重新装一次（见 README 的升级说明）**：
+
+- 旧插件 `astrbot_plugin_topic_router` 与新版是**两个不同的插件条目**，会同时出现在插件列表里，
+  必须先**卸载旧版**，否则两个都会加载、重复判定；
+- 话题状态文件路径变了，旧的状态（每个会话的话题名/轮数）**不会自动迁移**，会从零开始建档
+  （不影响任何对话内容）；
+- 想保留旧状态，可在卸载前把
+  `data/plugin_data/astrbot_plugin_topic_router/topic_state.json`
+  复制成 `data/plugin_data/astrbot_plugin_topic_router_pro/topic_state.json`。
+
+**仓库地址没有变**（GitHub 仓库名仍是 `astrbot_plugin_topic_router`），因为改仓库名需要仓库设置
+权限；AstrBot 并不要求仓库名与插件名一致，所以不影响安装与更新。
+
 ## v0.6.1
 
 **修掉 README 里一处死链，并补上 AstrBot 版本要求。**

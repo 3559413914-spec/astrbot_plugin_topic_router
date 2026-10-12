@@ -1,6 +1,6 @@
-<img src="logo.png" alt="话题路由器" width="120" align="right">
+<img src="logo.png" alt="话题路由器 PRO" width="120" align="right">
 
-# 话题路由器 · Topic Router
+# 话题路由器 PRO · Topic Router
 
 > 让机器人自己判断用户这句话是**接着上一个话题**，还是**开了新话题**。
 
@@ -61,6 +61,7 @@ AstrBot 的对话是一整条上下文。当用户在同一个会话里从"帮�
 - [原理](#原理)
 - [它能做什么](#它能做什么)
 - [安装：先选你的部署方式](#安装先选你的部署方式)
+- [从旧版升级（原「话题路由器」）](#从旧版升级原话题路由器)
   - [方式 A：WebUI 上传（所有平台通用，推荐）](#方式-a从插件市场安装最简单推荐)
   - [方式 B：Docker 部署的 AstrBot](#方式-bdocker-部署的-astrbot)
   - [方式 C：Windows 桌面客户端](#方式-cwindows-桌面客户端)
@@ -150,16 +151,16 @@ AstrBot 的对话是一整条上下文。当用户在同一个会话里从"帮�
 不用碰命令行、不用进容器，**所有部署方式都适用**。
 
 1. 管理面板 → **插件 → 插件**（`/extension/plugins`）；
-2. 右上角 **安装插件 → 从文件安装**，选择 `astrbot_plugin_topic_router-<版本>.zip`；
-3. 等日志出现 `Installed plugin astrbot_plugin_topic_router-... successfully.`；
+2. 右上角 **安装插件 → 从文件安装**，选择 `astrbot_plugin_topic_router_pro-<版本>.zip`；
+3. 等日志出现 `Installed plugin astrbot_plugin_topic_router_pro-... successfully.`；
 4. 在插件列表确认已**启用**，再进 **插件配置** 填 `provider_id`。
 
 zip 从哪来：本仓库**不提供预编译的 zip 附件**（市场装的就是最新版）。要从文件安装就自己打一个：
 
 ```bash
 git clone https://github.com/xun-hen/astrbot_plugin_topic_router
-cd astrbot_plugin_topic_router
-python build_zip.py            # 在桌面生成 astrbot_plugin_topic_router-<版本>.zip
+cd astrbot_plugin_topic_router_pro
+python build_zip.py            # 在桌面生成 astrbot_plugin_topic_router_pro-<版本>.zip
 ```
 
 也可以直接下 GitHub 的源码压缩包（Code → Download ZIP）——仓库根目录就是插件目录，
@@ -200,7 +201,7 @@ AstrBot 会自己把那层目录拍平，能正常识别。
 docker ps
 
 # 2) 把解压出来的插件目录拷进去
-docker cp astrbot_plugin_topic_router <容器名>:/AstrBot/data/plugins/
+docker cp astrbot_plugin_topic_router_pro <容器名>:/AstrBot/data/plugins/
 
 # 3) 重启容器让它加载
 docker restart <容器名>
@@ -214,7 +215,7 @@ docker logs -f <容器名> | grep -i topic
 
 ```bash
 # 例如启动命令是 -v $PWD/data:/AstrBot/data
-cp -r astrbot_plugin_topic_router ./data/plugins/
+cp -r astrbot_plugin_topic_router_pro ./data/plugins/
 docker restart <容器名>
 ```
 
@@ -267,11 +268,11 @@ services:
 **直接放目录**：
 
 1. 完全退出 AstrBot 桌面客户端（托盘图标也要退出）；
-2. 把 `astrbot_plugin_topic_router` 整个目录复制到：
+2. 把 `astrbot_plugin_topic_router_pro` 整个目录复制到：
    ```
    C:\Users\<你的用户名>\.astrbot\data\plugins\
    ```
-   最终结构必须是 `.astrbot\data\plugins\astrbot_plugin_topic_router\metadata.yaml`；
+   最终结构必须是 `.astrbot\data\plugins\astrbot_plugin_topic_router_pro\metadata.yaml`；
 3. 重新启动客户端。
 
 **C3. 只想在本地试一下、不启动 AstrBot**：仓库的 `tests/test_portability.py` 用桩模块跑，
@@ -315,15 +316,15 @@ sudo -i
 readlink -f /vol1/@appdata/astrbot
 
 # 3) 解压并放进插件目录
-unzip astrbot_plugin_topic_router-*.zip -d /tmp/
-cp -r /tmp/astrbot_plugin_topic_router \
+unzip astrbot_plugin_topic_router_pro-*.zip -d /tmp/
+cp -r /tmp/astrbot_plugin_topic_router_pro \
       /vol1/@appdata/astrbot/data/plugins/
 
 # 4) 关键：把属主改回应用用户，否则 AstrBot 读不到 / 写不了
-chown -R astrbot:astrbot /vol1/@appdata/astrbot/data/plugins/astrbot_plugin_topic_router
+chown -R astrbot:astrbot /vol1/@appdata/astrbot/data/plugins/astrbot_plugin_topic_router_pro
 
 # 5) 确认结构
-ls /vol1/@appdata/astrbot/data/plugins/astrbot_plugin_topic_router/metadata.yaml
+ls /vol1/@appdata/astrbot/data/plugins/astrbot_plugin_topic_router_pro/metadata.yaml
 ```
 
 然后回应用中心**停用 → 启用**。
@@ -384,7 +385,7 @@ astrbot run
 
 ```bash
 # 把插件放进数据目录（注意：这里是 <AstrBot 启动目录>/data，不是 ~/.astrbot）
-cp -r astrbot_plugin_topic_router ./data/plugins/
+cp -r astrbot_plugin_topic_router_pro ./data/plugins/
 # 重启 AstrBot
 ```
 
@@ -395,6 +396,32 @@ export ASTRBOT_ROOT=/opt/astrbot      # 之后数据都在 /opt/astrbot/data
 ```
 
 > 启动器/脚本部署同样落在 `<AstrBot 目录>/data/plugins/`，WebUI 默认也是 `:6185`。
+
+---
+
+## 从旧版升级（原「话题路由器」）
+
+这个插件在 v0.7.0 改名为 **话题路由器 PRO**，内部标识从 `astrbot_plugin_topic_router` 变成
+`astrbot_plugin_topic_router_pro`。对 AstrBot 来说这是**两个不同的插件**，所以要按下面做：
+
+1. **先卸载旧版**：插件 → 插件 → 找到「话题路由器」（`astrbot_plugin_topic_router`）→ 卸载。
+   ⚠️ 不卸载的话两个都会加载、对同一条消息判定两次；
+2. **再装新版**：从插件市场搜「话题路由器PRO」安装，或上传
+   `astrbot_plugin_topic_router_pro-<版本>.zip`；
+3. **想保留旧的话题状态**（每个会话记住的话题名、轮数），在卸载前复制一份：
+
+   ```bash
+   cd <你的数据目录>/plugin_data
+   mkdir -p astrbot_plugin_topic_router_pro
+   cp astrbot_plugin_topic_router/topic_state.json \
+      astrbot_plugin_topic_router_pro/topic_state.json
+   ```
+
+   不迁移也没关系：只是话题状态从零开始建档，**对话内容完全不受影响**；
+4. 装完确认一下插件配置里的 `provider_id`（新插件是独立的配置项，旧配置不会带过来）。
+
+> 仓库地址仍是 `xun-hen/astrbot_plugin_topic_router`（改仓库名需要仓库设置权限，AstrBot 也不要求
+> 仓库名与插件名一致）。
 
 ---
 
@@ -475,7 +502,7 @@ export ASTRBOT_ROOT=/opt/astrbot      # 之后数据都在 /opt/astrbot/data
 | `new_conversation_notice` | `true` | `auto` 切换时是否在群里说一句 |
 | `debug_log` | `true` | 把判定明细写进日志 |
 
-状态文件：`<数据目录>/plugin_data/astrbot_plugin_topic_router/topic_state.json`
+状态文件：`<数据目录>/plugin_data/astrbot_plugin_topic_router_pro/topic_state.json`
 （每个会话一条记录，直接删文件等于全部重置）。
 
 ---
@@ -501,7 +528,7 @@ export ASTRBOT_ROOT=/opt/astrbot      # 之后数据都在 /opt/astrbot/data
 
 | 现象 | 处理 |
 | --- | --- |
-| 安装时报 `FileNotFoundError: .../plugin/astrbot_plugin_topic_router` | 包是用系统压缩工具打的（反斜杠条目名 / 缺目录条目）。用 `python build_zip.py` 重新打包，或直接用 release 里的包 |
+| 安装时报 `FileNotFoundError: .../plugin/astrbot_plugin_topic_router_pro` | 包是用系统压缩工具打的（反斜杠条目名 / 缺目录条目）。用 `python build_zip.py` 重新打包，或直接用 release 里的包 |
 | 日志里完全没有插件的行 | 插件没装上或被禁用：去 **插件 → 插件** 看列表状态与版本 |
 | 有 `模块已导入` 但没有判定日志 | `mode` 是 `off`、或 `enabled` 是 `false`、或 `debug_log` 关了；也可能是这个会话被 `/topicweave off` 关了 |
 | 判定结果和实际不符，老是判延续 | 看日志里的 `heuristic_confidence`：启发式就判了延续的话，调低 `sim_continue` 或调高 `sim_new_topic` |
@@ -564,7 +591,7 @@ python tests/verify_zip_install.py
 ### 自己打包
 
 ```bash
-python build_zip.py            # 输出 astrbot_plugin_topic_router-<版本>.zip 到桌面
+python build_zip.py            # 输出 astrbot_plugin_topic_router_pro-<版本>.zip 到桌面
 ```
 
 **必须用这个脚本，不要用系统右键压缩**：Windows 的压缩工具写反斜杠条目名、且不写目录条目，
