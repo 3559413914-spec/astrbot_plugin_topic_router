@@ -621,6 +621,7 @@ Linux 上的 AstrBot 解包后会抛 `FileNotFoundError`；此外它还会把 `t
 | `_conf_schema.json` | WebUI 配置项定义 |
 | `metadata.yaml` | 插件元信息 |
 | `tests/eval_topic_detection.py` | 真实数据评测台（阈值调参用，不进安装包） |
+| `docs/DESIGN.md` | **技术文档**：设计取舍、判定原理、执行架构、六个实机踩坑、测试体系 |
 
 > **给改代码的人**：这个插件的 handler 是**模块级函数**（不是类方法），状态放在模块级
 > `RUNTIME` / `_CTX` 上，方法体里不允许出现 `self.xxx`。原因写在 `router.py` 文件头——
@@ -632,6 +633,9 @@ Linux 上的 AstrBot 解包后会抛 `FileNotFoundError`；此外它还会把 `t
 
 改代码前请先读 [CONTRIBUTING.md](CONTRIBUTING.md) 的「改代码前必读」——里面六条约束都是
 线上事故换来的（比如 handler 为什么必须是模块级函数）。
+
+想理解**为什么这样设计**（而不是只知道规则），看 [docs/DESIGN.md](docs/DESIGN.md)：
+它写清了判定算法、两条执行路径的由来、六个实机踩坑的完整根因，以及测试与评测方法。
 
 作者：[@xun-hen](https://github.com/xun-hen)。欢迎提 Issue 和 PR。
 

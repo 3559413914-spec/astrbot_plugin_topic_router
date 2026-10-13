@@ -731,26 +731,6 @@ def _log_verdict(umo: str, message: str, verdict: Verdict, state: Any) -> None:
     )
 
 
-def _detect_key(message: str) -> str:
-    """按"纯文本"算去重键。
-
-    为什么需要它：判定现在有**两条路**——
-    1. 消息事件（`handle_message_v017`，快，但可能被别的插件 stop 掉）；
-    2. 请求钩子（`hook_llm_request_v017`，不在处理器循环里，不会被 stop，但只拿得到
-       `ProviderRequest`、拿不到事件，所以只能用提示词里的用户消息原文当依据）。
-
-    两条路都可能先到，也可能都到（前者没被 stop 时），所以要有一个两路都能算出来的键。
-    用文本本身（而不是消息 ID）是为了让钩子那条路也能算。
-
-    Args:
-        message: 用户消息正文。
-
-    Returns:
-        去重键。
-    """
-    return "text:" + normalize_text(message)[:120]
-
-
 async def _detect(
     ctx: Context | None,
     event: Any,
