@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -97,6 +98,101 @@ MODE_AUTO = "auto"
 # 送给判定模型的近期用户消息条数上限
 RECENT_KEEP = 6
 
+# 同一段文本在这个时间窗内只判定一次（秒）。
+#
+# **只用于"钩子路跳过事件路已判过的文本"**，不能拿来当"事件路的去重键"——否则用户
+# 把同一句话重新发一遍（新的消息 ID、不同的一轮）会被误判成重复。事件路用消息 ID 去重。
+DETECT_DEDUP_WINDOW = 90.0
+
+# 钩子路的去重窗口：事件路刚判过的文本，在这么短的时间内被钩子再看到，才认定是同一条消息。
+# 取值要覆盖"事件路 → 主模型调用 → 请求钩子"这段延迟。给太大会把用户重发的话误吞。
+HOOK_DEDUP_WINDOW = 10.0
+
+# 消息事件处理器的优先级。
+#
+# 为什么必须显式声明（v0.8.0 的实机故障）：AstrBot 的处理器循环是
+#     for handler in activated_handlers:
+#         if event.is_stopped(): break
+# 且注册表按 `-priority` 排序、未声明者默认 0。装了"消息防抖动 / 连续消息合并"这类
+# 插件时，它们会用 priority=50 先跑并静默事件（`event._force_stopped = True`），
+# 于是默认优先级 0 的本插件**一次都执行不到**（实测调用次数 0）。
+#
+# 取 60：高于常见的防抖/合并类插件（实测 `astrbot_plugin_continuous_message` 是 50），
+# 又远低于 AstrBot 内置指令（通常很高）。而且本处理器只判定与记录、不 stop_event、
+# 不发消息，提前执行不会干扰别人的合并与静默逻辑。
+MESSAGE_PRIORITY = 60
+
+
+def _extract_user_message(req: Any) -> str:
+    """从 `ProviderRequest` 里取出"用户最新这一条消息"。
+
+    请求钩子拿不到事件对象，只能从提示词里抠。判定器自己拼的提示词格式是固定的
+    （见 `detection.build_user_prompt` 的 `用户最新消息：` 行），所以优先按它切；
+    切不到就退回"整段提示词足够短就当作消息"。
+
+    Args:
+        req: `ProviderRequest`。
+
+    Returns:
+        用户消息正文；取不到时返回空串。
+    """
+    prompt = getattr(req, "prompt", "") or ""
+    if not isinstance(prompt, str):
+        return ""
+    prompt = prompt.strip()
+    if not prompt:
+        return ""
+    marker = "用户最新消息："
+    tail = prompt.rsplit(marker, 1)[-1] if marker in prompt else ""
+    text = (tail or prompt).strip()
+    # 去掉判定器要求模型输出的那句尾巴
+    for noise in ("请输出判定 JSON。", "请输出判定JSON。"):
+        if text.endswith(noise):
+            text = text[: -len(noise)].strip()
+    if len(text) > 4000:  # 不是"一条消息"的样子，别拿它去判定
+        return ""
+    return text
+
+
+def _umo_from_request(req: Any) -> str:
+    """尽量从 `ProviderRequest` 推出会话标识。
+
+    钩子路径没有事件，只能看 `req.conversation`。取不到就返回空串，由 `_detect`
+    退回按对话 ID（`cid`）隔离——两条路都以 `cid` 为主键，所以不会互相打架。
+
+    Args:
+        req: `ProviderRequest`。
+
+    Returns:
+        会话标识或空串。
+    """
+    conv = getattr(req, "conversation", None)
+    for attr in ("unified_msg_origin", "umo", "session_id"):
+        value = getattr(conv, attr, None)
+        if isinstance(value, str) and value:
+            return value
+    cid = getattr(conv, "cid", None)
+    if isinstance(cid, str) and cid:
+        return f"conversation:{cid}"
+    return ""
+
+
+def normalize_text(text: str) -> str:
+    """把文本压成便于比较的形式：去空白、去标点、小写、数字折叠。
+
+    为了让"两条路算出的去重键"一致，这里必须和 `detection.normalize` 用同一套规则。
+    刻意重新实现一份而不是 import：`detection` 里那份是模块级私有函数（下划线开头），
+    跨模块直接用容易在重构时踩空；这段只有一行正则，重复的代价更低。
+
+    Args:
+        text: 原始文本。
+
+    Returns:
+        归一化后的文本。
+    """
+    cleaned = re.sub(r"[^\w\u4e00-\u9fff]+", "", re.sub(r"\s+", "", (text or "").lower()))
+    return re.sub(r"\d+", "0", cleaned)
+
 
 def _read_plugin_version() -> str:
     """从 metadata.yaml 读版本号。
@@ -156,6 +252,13 @@ class _Runtime:
 
     只放内存、不落盘：它只在"回复产生 → 下一条消息判定"之间用一次，
     持久化在 state 里的是按会话保留的最近一条。
+    """
+    last_detect: dict[str, float] = {}
+    """去重表：{"<umo>|text:<归一化文本前120字>": 时间戳}。
+
+    判定有两条路：消息事件（`handle_message_v017`）与请求钩子
+    （`hook_llm_request_v017`）。两条路都可能先到，靠它保证同一段文本只判一次。
+    只放内存：重启后重复判一次无害，落盘反而要处理淘汰策略。
     """
 
 
@@ -340,11 +443,14 @@ def _batch_key(event: Any, message: str) -> str | None:
     return None
 
 
-def _state(ctx: Context, umo: str, conv_id: str) -> Any:
+def _state(ctx: Context | None, umo: str, conv_id: str) -> Any:
     """取话题状态，必要时作废过期状态。
 
+    刻意不碰 `ctx`（只是保留签名对称），所以 `ctx` 为 None 也安全——请求钩子那条路
+    拿不到上下文时照样能用。
+
     Args:
-        ctx: 插件上下文。
+        ctx: 插件上下文，可能为 None。
         umo: 统一消息来源。
         conv_id: 当前对话 ID。
 
@@ -367,12 +473,13 @@ def _state(ctx: Context, umo: str, conv_id: str) -> Any:
     return state
 
 
-async def _conversation_id(ctx: Context | None, event: Any) -> str:
+async def _conversation_id(ctx: Context | None, event: Any, umo: str = "") -> str:
     """取当前对话 ID，取不到时返回空串。
 
     Args:
         ctx: 插件上下文，可能为 None。
-        event: 消息事件。
+        event: 消息事件（请求钩子那条路没有事件，传 None）。
+        umo: 会话标识；事件缺失时用它代替。
 
     Returns:
         对话 ID。
@@ -380,8 +487,11 @@ async def _conversation_id(ctx: Context | None, event: Any) -> str:
     manager = getattr(ctx, "conversation_manager", None)
     if manager is None:
         return ""
+    key = umo or (_umo(event) if event is not None else "")
+    if not key:
+        return ""
     try:
-        cid = await manager.get_curr_conversation_id(_umo(event))
+        cid = await manager.get_curr_conversation_id(key)
     except Exception as exc:  # noqa: BLE001 - 会话服务异常不能影响主流程
         logger.debug(f"[{PLUGIN_NAME}] 读取当前对话失败: {exc}")
         return ""
@@ -621,32 +731,84 @@ def _log_verdict(umo: str, message: str, verdict: Verdict, state: Any) -> None:
     )
 
 
-async def _detect(ctx: Context | None, event: Any, message: str) -> None:
+def _detect_key(message: str) -> str:
+    """按"纯文本"算去重键。
+
+    为什么需要它：判定现在有**两条路**——
+    1. 消息事件（`handle_message_v017`，快，但可能被别的插件 stop 掉）；
+    2. 请求钩子（`hook_llm_request_v017`，不在处理器循环里，不会被 stop，但只拿得到
+       `ProviderRequest`、拿不到事件，所以只能用提示词里的用户消息原文当依据）。
+
+    两条路都可能先到，也可能都到（前者没被 stop 时），所以要有一个两路都能算出来的键。
+    用文本本身（而不是消息 ID）是为了让钩子那条路也能算。
+
+    Args:
+        message: 用户消息正文。
+
+    Returns:
+        去重键。
+    """
+    return "text:" + normalize_text(message)[:120]
+
+
+async def _detect(
+    ctx: Context | None,
+    event: Any,
+    message: str,
+    *,
+    umo: str = "",
+) -> Any:
     """对一个用户消息做话题判定并推进状态。
 
     全程不碰 `self`：见文件头说明。
 
     Args:
         ctx: 插件上下文，可能为 None。
-        event: 消息事件。
+        event: 消息事件（请求钩子那条路拿不到，传 None）。
         message: 用户消息正文。
+        umo: 会话标识；钩子路径下事件缺失，需要调用方显式给。
+
+    Returns:
+        最终 Verdict；未执行判定时返回 None。
     """
     if not _flag("enabled", True) or _mode() == MODE_OFF:
-        return
+        return None
 
-    umo = _umo(event)
-    conv_id = await _conversation_id(ctx, event)
+    umo = umo or _umo(event)
+    if not umo:
+        return None
+    conv_id = await _conversation_id(ctx, event, umo=umo)
     state = _state(ctx, umo, conv_id)
     if state.disabled:
-        logger.info(f"[{PLUGIN_NAME}] 本会话已被 /topic off 关闭，跳过判定")
-        return
+        logger.info(f"[{PLUGIN_NAME}] 本会话已被 /topicweave off 关闭，跳过判定")
+        return None
 
-    batch_key = _batch_key(event, message)
-    if batch_key is not None and state.last_detected == batch_key:
-        logger.debug(f"[{PLUGIN_NAME}] 这条消息已判定过（另一个入口先到了），跳过")
-        return
-    if batch_key is not None:
-        state.last_detected = batch_key
+    # 去重（两条路都可能到，见 DETECT_DEDUP_WINDOW / HOOK_DEDUP_WINDOW 的说明）：
+    #   · 有事件对象（消息事件那条路）→ 按消息 ID + 时间戳去重，用户重发同一句话算新一轮；
+    #   · 没有事件对象（请求钩子那条路）→ 只能按文本去重，并且只跳过"事件路刚判过的"
+    #     文本，避免同一条消息被判定两次。
+    now = time.time()
+    for stale_key in [
+        k for k, ts in RUNTIME.last_detect.items() if now - ts > DETECT_DEDUP_WINDOW
+    ]:
+        RUNTIME.last_detect.pop(stale_key, None)
+
+    event_key = _batch_key(event, message)
+    text_key = f"{umo}|text:{normalize_text(message)[:120]}"
+    if event_key is None:
+        # 钩子路：事件路刚判过就不重复判
+        seen = RUNTIME.last_detect.get(text_key)
+        if seen is not None and now - seen < HOOK_DEDUP_WINDOW:
+            logger.debug(
+                f"[{PLUGIN_NAME}] 这段消息刚由消息事件判过，钩子跳过：{message[:30]!r}"
+            )
+            return None
+    else:
+        if state.last_detected == event_key:
+            logger.debug(f"[{PLUGIN_NAME}] 这条消息已判定过（另一个入口先到了），跳过")
+            return None
+        state.last_detected = event_key
+    RUNTIME.last_detect[text_key] = now
 
     # 取上一轮机器人回复（回复钩子先存进 pending_replies），并落到状态里
     reply = RUNTIME.pending_replies.pop(umo, "")
@@ -711,6 +873,7 @@ async def _detect(ctx: Context | None, event: Any, message: str) -> None:
         logger.info(
             f"[{PLUGIN_NAME}] {_mode()} 的请求改写已挂起，等请求钩子执行"
         )
+    return verdict
 
 
 async def _apply_request_actions(ctx: Context | None, event: Any, req: Any) -> None:
@@ -923,7 +1086,7 @@ class TopicRouterPlugin(Star):
 # ===========================================================================
 
 
-@filter.event_message_type(filter.EventMessageType.ALL)
+@filter.event_message_type(filter.EventMessageType.ALL, priority=MESSAGE_PRIORITY)
 async def handle_message_v017(*args: Any, **kwargs: Any):
     """主判定入口：消息事件。
 
@@ -966,27 +1129,55 @@ async def handle_message_v017(*args: Any, **kwargs: Any):
     yield  # pragma: no cover - 让它是异步生成器，框架两种形态都接受
 
 
-@filter.on_llm_request()
+@filter.on_llm_request(priority=MESSAGE_PRIORITY)
 async def hook_llm_request_v017(*args: Any, **kwargs: Any) -> None:
-    """可选增强：能拿到 `ProviderRequest` 时执行 `hint` / `auto` 的请求改写。
+    """请求钩子：**判定主场之一** + `hint` / `auto` 的请求改写。
 
-    判定不依赖这里（见 `handle_message_v017`）。拿不到请求就安静返回：实机上这个
-    钩子只拿到 `ProviderRequest`、拿不到事件（`has_event=False`）。
+    为什么判定要放在这里（v0.8.0 的架构性修复）：
+
+    消息事件处理器排在一个**按优先级降序执行、遇到 `event.is_stopped()` 就 break**
+    的循环里。装了"消息防抖动 / 连续消息合并"这类插件时，它们会用更高优先级
+    （例如 50）先跑，并调用 `event._force_stopped = True` 静默事件——于是排在后面的
+    消息处理器**一次都不会执行**（实测：`handle_message_v017` 调用次数 0，而本钩子
+    照常触发 4 次）。本钩子**不在那个循环里**，不受优先级与事件静默影响。
+
+    所以现在的策略是"两条路都要"：
+    - 消息事件那条路（快、有事件对象）正常时先到；
+    - 本钩子在事件被静默时代跑判定，用自己的去重表与前者互斥。
+    另外消息事件也提高了优先级（见 `MESSAGE_PRIORITY`），双保险。
 
     Args:
-        *args: 派发方给的位置参数。
+        *args: 派发方给的位置参数（实机上只有 `ProviderRequest`）。
         **kwargs: 关键字形式的情况。
     """
     event, req = _extract(*args, **kwargs)
+    event_umo = _umo(event) if event is not None else ""
     logger.info(
         f"[{PLUGIN_NAME}] hook_llm_request_v017 被调用 | {PLUGIN_VERSION} "
         f"| has_event={event is not None} | has_request={req is not None} "
         f"| args={[type(a).__name__ for a in args]} | kwargs={sorted(kwargs)}"
     )
-    if event is None or req is None:
+    if req is None:
+        return
+    ctx = _ctx()
+
+    # --- 1) 判定：事件那条路被静默时，由这里兜底 ---
+    if _flag("detect_in_hook", True):
+        message = _extract_user_message(req)
+        if message:
+            umo = event_umo or _umo_from_request(req)
+            try:
+                await _detect(ctx, event, message, umo=umo)
+            except Exception as exc:  # noqa: BLE001 - 判定失败绝不影响正常回复
+                logger.warning(
+                    f"[{PLUGIN_NAME}] 钩子内判定异常（已兜住）：{type(exc).__name__}: {exc}"
+                )
+
+    # --- 2) 请求改写：只对绑定好的会话生效（这里通常拿不到事件） ---
+    if event is None:
         return
     try:
-        await _apply_request_actions(_ctx(), event, req)
+        await _apply_request_actions(ctx, event, req)
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[{PLUGIN_NAME}] 请求改写被跳过：{type(exc).__name__}: {exc}")
 
@@ -1026,7 +1217,7 @@ async def hook_llm_response_v018(*args: Any, **kwargs: Any) -> None:
     RUNTIME.pending_replies[_umo(event)] = reply[:1000]
 
 
-@filter.command("topicweave", alias={"话题织机"})
+@filter.command("topicweave", alias={"话题织机"}, priority=MESSAGE_PRIORITY)
 async def command_topic_v017(*args: Any, **kwargs: Any):
     """查看/管理当前会话的话题状态。
 

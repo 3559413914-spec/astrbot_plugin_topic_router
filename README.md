@@ -52,6 +52,17 @@ AstrBot 的对话是一整条上下文。当用户在同一个会话里从"帮�
 3. **失败不影响正常聊天**。判定是旁路：超时、异常、JSON 解析失败都退化成「延续」，
    该回的消息照常回。
 
+**判定跑在两条路上**（v0.8.0 起）：
+
+| 路 | 位置 | 特点 |
+| --- | --- | --- |
+| 消息事件 | `handle_message_v017`，`priority=60` | 最快，能拿到事件对象；但**可能被别的插件静默** |
+| 请求钩子 | `hook_llm_request_v017` | 不在插件排队循环里，**不会被任何插件挡住**；只拿得到提示词 |
+
+AstrBot 的处理器循环遇到 `event.is_stopped()` 就会 `break`，而「消息防抖动 / 连续消息合并」
+这类插件会用更高优先级先跑并静默事件——这就是 v0.7.x 及以前"插件在跑但判定为零"的原因。
+两条路靠去重互斥，同一条消息只会判定一次。
+
 判定结果按会话（UMO）隔离保存，`auto` 模式只是替用户执行了一次 `/new`，旧对话完整留档。
 
 ---
@@ -530,6 +541,7 @@ export ASTRBOT_ROOT=/opt/astrbot      # 之后数据都在 /opt/astrbot/data
 | --- | --- |
 | 安装时报 `FileNotFoundError: .../plugin/astrbot_plugin_topic_router_pro` | 包是用系统压缩工具打的（反斜杠条目名 / 缺目录条目）。用 `python build_zip.py` 重新打包，或直接用 release 里的包 |
 | 日志里完全没有插件的行 | 插件没装上或被禁用：去 **插件 → 插件** 看列表状态与版本 |
+| 有 `hook_llm_request_v017 被调用`，但搜不到 `handle_message_v017 被调用`，且没有 `topic_state.json` | v0.7.x 的已知缺陷（消息入口被别的插件静默）。升级到 **v0.8.0+** 即可，判定已迁移到请求钩子 |
 | 有 `模块已导入` 但没有判定日志 | `mode` 是 `off`、或 `enabled` 是 `false`、或 `debug_log` 关了；也可能是这个会话被 `/topicweave off` 关了 |
 | 判定结果和实际不符，老是判延续 | 看日志里的 `heuristic_confidence`：启发式就判了延续的话，调低 `sim_continue` 或调高 `sim_new_topic` |
 | `[WARN] 判定模型调用失败` | `provider_id` 写错或该 provider 不可用；去日志里抄一个可用的 ID |

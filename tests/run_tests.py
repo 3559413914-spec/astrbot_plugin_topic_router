@@ -831,10 +831,14 @@ async def test_hint_mode(module) -> None:
 async def test_request_hook_alone(module) -> None:
     """只有请求钩子被调用时（消息事件没到），判定也应该发生。
 
+    v0.8.0 的架构性修复：实机上装了「消息防抖动」类插件后，消息事件处理器会被
+    `event.is_stopped()` 挡在循环外，一次都不执行；而请求钩子不在那个循环里，照常触发。
+    所以判定必须能在钩子里独立完成。
+
     Args:
         module: 插件模块。
     """
-    print("\n[7] 只有 on_llm_request 被调用的路径")
+    print("\n[7] 只有 on_llm_request 被调用的路径（事件被别的插件静默时）")
     fresh_data_root("hook-only")
     context = FakeContext()
     plugin = make_plugin(module, context, {"mode": "hint"})
@@ -842,26 +846,38 @@ async def test_request_hook_alone(module) -> None:
     event = FakeEvent("帮我写个爬虫抓豆瓣", umo)
     from astrbot.api.provider import ProviderRequest
 
-    req = ProviderRequest(prompt=event.message_str)
-    # 只走钩子：先挂起、再执行，等价于实机上"消息事件没触发、只有钩子"的情况
+    # 提示词按判定器的格式拼，钩子才抠得出用户消息
+    prompt = f"当前话题：（还没有话题）\n用户最新消息：{event.message_str}\n请输出判定 JSON。"
+    req = ProviderRequest(prompt=prompt)
     await MODULE.hook_llm_request_v017(event, req)
-    # 钩子本身不做判定（判定属于消息事件），所以这里不应该有注入
-    check("钩子单独调用不会凭空判定", len(req.extra_user_content_parts) == 0)
 
-    # 走完消息事件后，挂起动作会在下一次钩子调用时执行
-    async for _ in MODULE.handle_message_v017(event):
-        pass
-    check("消息事件完成了判定", state_store().get(umo).turns == 1)
-    req2 = ProviderRequest(prompt=event.message_str)
+    check(
+        "钩子单独调用也完成了判定（不依赖消息事件）",
+        state_store().get(umo).turns == 1,
+        f"turns={state_store().get(umo).turns}",
+    )
+    check(
+        "同一轮里挂起的 hint 动作被本次钩子就地执行",
+        len(req.extra_user_content_parts) == 1,
+        str(req.extra_user_content_parts),
+    )
+
+    # 事件路先跑同一条消息：钩子不该把它再判一次
+    turns_before = state_store().get(umo).turns
+    req2 = ProviderRequest(prompt=prompt)
     await MODULE.hook_llm_request_v017(event, req2)
-    check("挂起的 hint 动作已执行", len(req2.extra_user_content_parts) == 1)
+    check(
+        "事件路已判过的消息，钩子不重复判定",
+        state_store().get(umo).turns == turns_before,
+        f"turns={state_store().get(umo).turns}",
+    )
 
-    # 同一条消息再走一遍消息事件，不应该被判定两次
+    # 消息事件路本身：同一条消息重复到达按消息 ID 去重
     async for _ in MODULE.handle_message_v017(event):
         pass
     check(
         "重复到达的消息被跳过",
-        state_store().get(umo).turns == 1,
+        state_store().get(umo).turns == turns_before,
         f"turns={state_store().get(umo).turns}",
     )
 
@@ -871,9 +887,10 @@ async def test_request_hook_alone(module) -> None:
         pass
     check(
         "用户重发同样的话算新一轮",
-        state_store().get(umo).turns == 2,
+        state_store().get(umo).turns == turns_before + 1,
         f"turns={state_store().get(umo).turns}",
     )
+    del plugin
 
 
 async def test_state_lifecycle(module) -> None:
