@@ -59,9 +59,14 @@ AstrBot 的对话是一整条上下文。当用户在同一个会话里从"帮�
 | 消息事件 | `handle_message_v017`，`priority=60` | 最快，能拿到事件对象；但**可能被别的插件静默** |
 | 请求钩子 | `hook_llm_request_v017` | 不在插件排队循环里，**不会被任何插件挡住**；只拿得到提示词 |
 
-AstrBot 的处理器循环遇到 `event.is_stopped()` 就会 `break`，而「消息防抖动 / 连续消息合并」
-这类插件会用更高优先级先跑并静默事件——这就是 v0.7.x 及以前"插件在跑但判定为零"的原因。
+AstrBot 的处理器循环遇到 `event.is_stopped()` 就会 `break`。只要有**优先级高于本插件**的
+插件先跑并静默事件，消息入口就一次都执行不到。
 两条路靠去重互斥，同一条消息只会判定一次。
+
+> ⚠️ v0.8.2 更正：旧版这里说「消息防抖动插件（`priority=50`）会挡住我们」是**误判**——
+> `tests/reproduce_priority_race.py` 在真实注册表上验证过，它排在 `priority=60` 的本插件
+> **之后**。真正能挡住入口的是优先级 **> 60** 的插件。优先级是相对值，永远不提供绝对保证，
+> 所以判定同时跑在请求钩子上（那条路不在循环里）。
 
 判定结果按会话（UMO）隔离保存，`auto` 模式只是替用户执行了一次 `/new`，旧对话完整留档。
 
@@ -512,6 +517,7 @@ export ASTRBOT_ROOT=/opt/astrbot      # 之后数据都在 /opt/astrbot/data
 | `max_checks_per_hour` | `30` | 每个会话每小时的模型判定上限（0 不限） |
 | `new_conversation_notice` | `true` | `auto` 切换时是否在群里说一句 |
 | `debug_log` | `true` | 把判定明细写进日志 |
+| `trace_enabled` | `false` | 把入口调用证据落盘到 `trace.log`（排障用，见故障排查表） |
 
 状态文件：`<数据目录>/plugin_data/astrbot_plugin_topic_router_pro/topic_state.json`
 （每个会话一条记录，直接删文件等于全部重置）。
@@ -542,6 +548,7 @@ export ASTRBOT_ROOT=/opt/astrbot      # 之后数据都在 /opt/astrbot/data
 | 安装时报 `FileNotFoundError: .../plugin/astrbot_plugin_topic_router_pro` | 包是用系统压缩工具打的（反斜杠条目名 / 缺目录条目）。用 `python build_zip.py` 重新打包，或直接用 release 里的包 |
 | 日志里完全没有插件的行 | 插件没装上或被禁用：去 **插件 → 插件** 看列表状态与版本 |
 | 有 `hook_llm_request_v017 被调用`，但搜不到 `handle_message_v017 被调用`，且没有 `topic_state.json` | v0.7.x 的已知缺陷（消息入口被别的插件静默）。升级到 **v0.8.0+** 即可，判定已迁移到请求钩子 |
+| 升级到 v0.8.0+ 后仍只有钩子日志、没有入口日志 | 有优先级 **> 60** 的插件先静默了事件。开启 `trace_enabled` 后看 `trace.log` 里有没有 `ENTRY` 行来定性：<br>· **有 ENTRY、没 VERDICT** → 入口跑了但判定被跳过（多半是去重命中），查 `via=` 与 `turns`；<br>· **连 ENTRY 都没有** → 入口确实没被派发，去插件列表查其它插件的 `priority`，或按 `docs/DESIGN.md` 第 9.1 节的顺序排查。<br>注意：**别用 `grep -c` 数日志**——WebUI 会把你自己敲的命令也记进 `info.log`，统计会把自己数进去 |
 | 有 `模块已导入` 但没有判定日志 | `mode` 是 `off`、或 `enabled` 是 `false`、或 `debug_log` 关了；也可能是这个会话被 `/topicweave off` 关了 |
 | 判定结果和实际不符，老是判延续 | 看日志里的 `heuristic_confidence`：启发式就判了延续的话，调低 `sim_continue` 或调高 `sim_new_topic` |
 | `[WARN] 判定模型调用失败` | `provider_id` 写错或该 provider 不可用；去日志里抄一个可用的 ID |
@@ -581,10 +588,10 @@ python tests/eval_topic_detection.py --json-out before.json
 
 ## 开发与测试
 
-四套离线测试，都不需要启动 AstrBot（除了第一套需要 AstrBot 的 Python 环境来 import 真实 API）：
+五套离线测试，都不需要启动 AstrBot（第一、四、五套需要 AstrBot 的 Python 环境来 import 真实代码）：
 
 ```bash
-# 1) 插件逻辑：135 项（需要 AstrBot 的 python；桌面版在 ~/.astrbot 之外）
+# 1) 插件逻辑：150 项（含跨路去重与落盘取证；需要 AstrBot 的 python）
 python tests/run_tests.py
 
 # 2) 可移植性：16 项（用桩模块，任意 Python 3.10+）
@@ -596,7 +603,10 @@ python tests/eval_topic_detection.py --compare-legacy
 # 4) 注册表复用复现：9 项（验证 AstrBot 的 handler 注册表行为）
 python tests/reproduce_hook_dispatch.py
 
-# 5) zip 安装流程：21 项（需要 AstrBot v4.28.1 源码，见脚本内提示）
+# 5) 真实派发循环里的优先级竞争：13 项（需要 AstrBot 的 python）
+python tests/reproduce_priority_race.py
+
+# 6) zip 安装流程：21 项（需要 AstrBot v4.28.1 源码，见脚本内提示）
 python tests/verify_zip_install.py
 ```
 

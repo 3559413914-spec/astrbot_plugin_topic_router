@@ -108,18 +108,35 @@ DETECT_DEDUP_WINDOW = 90.0
 # 取值要覆盖"事件路 → 主模型调用 → 请求钩子"这段延迟。给太大会把用户重发的话误吞。
 HOOK_DEDUP_WINDOW = 10.0
 
+# 事件路回头识别"钩子刚判过"的时间窗（秒）。
+#
+# 背景（v0.8.2 修的不对称去重）：钩子路拿不到事件对象，`_batch_key()` 必然返回 None，
+# 所以它无法写 `last_detected`。修复前钩子路判完**只**写内存里的 `RUNTIME.last_detect`，
+# 进程一重启就没了，"钩子先判、事件路后到"时事件路认不出来，同一条消息被判两次
+# （`turns` +2）。修复后钩子路额外把指纹落到 `TopicState.last_detected_hook`（持久化）。
+#
+# 这个常量用于解读该指纹的新鲜度（排障时判断"钩子是不是刚判过这句话"）。
+# **它不参与事件路的拦截决策**：事件路带平台消息 ID，是权威的消息身份，用户把同一句
+# 话重发一遍必须算新一轮。用文本来拦事件路会吞掉真实轮次（`tests/run_tests.py` 的
+# `[7]` 用例就是为此存在的）。
+CROSS_PATH_DEDUP_WINDOW = 60.0
+
 # 消息事件处理器的优先级。
 #
 # 为什么必须显式声明（v0.8.0 的实机故障）：AstrBot 的处理器循环是
 #     for handler in activated_handlers:
 #         if event.is_stopped(): break
 # 且注册表按 `-priority` 排序、未声明者默认 0。装了"消息防抖动 / 连续消息合并"这类
-# 插件时，它们会用 priority=50 先跑并静默事件（`event._force_stopped = True`），
-# 于是默认优先级 0 的本插件**一次都执行不到**（实测调用次数 0）。
+# 插件时，若它们的优先级高于本插件，就会先跑并静默事件
+# （`event._force_stopped = True`），于是本插件**一次都执行不到**。
 #
-# 取 60：高于常见的防抖/合并类插件（实测 `astrbot_plugin_continuous_message` 是 50），
-# 又远低于 AstrBot 内置指令（通常很高）。而且本处理器只判定与记录、不 stop_event、
-# 不发消息，提前执行不会干扰别人的合并与静默逻辑。
+# 取 60：高于常见的防抖/合并类插件（实测 `astrbot_plugin_continuous_message` 是 50，
+# 见 tests/reproduce_priority_race.py 在真实注册表上的顺序验证），又远低于 AstrBot
+# 内置指令（通常很高）。而且本处理器只判定与记录、不 stop_event、不发消息，提前执行
+# 不会干扰别人的合并与静默逻辑。
+#
+# **注意**：60 只保证"比 50 高"，不保证"比所有插件都高"。实机若仍有入口零调用，
+# 优先怀疑存在优先级 > 60 的第三方插件，而不是本插件的注册问题。
 MESSAGE_PRIORITY = 60
 
 
@@ -416,9 +433,50 @@ def _store() -> TopicStore:
         TopicStore 实例。
     """
     if RUNTIME.store is None:
-        data_dir = _data_root() / "plugin_data" / PLUGIN_NAME
-        RUNTIME.store = TopicStore(data_dir / "topic_state.json")
+        RUNTIME.store = TopicStore(_plugin_data_dir() / "topic_state.json")
     return RUNTIME.store
+
+
+def _plugin_data_dir() -> Path:
+    """插件的持久化数据目录。
+
+    Returns:
+        数据目录路径。
+    """
+    return _data_root() / "plugin_data" / PLUGIN_NAME
+
+
+def _trace(tag: str, umo: str = "-", extra: str = "") -> None:
+    """把排障证据**落盘**，不经过日志系统。
+
+    为什么需要它：判断"某个 handler 到底有没有被调用"时，日志有三个不可靠之处——
+
+    1. 级别：入口日志是 INFO，若运行环境把日志级别调到 WARNING 以上就什么都看不到；
+    2. 格式：AstrBot 会给插件日志自动加注 `[文件名:行号]`，不同版本格式不同，
+       用正则去 grep 很容易"看起来是 0 次"，实际是被模式写错筛掉了；
+    3. 污染：像 AstrBot WebUI 的"日志/终端"面板会把**你敲的命令本身**也记进
+       `info.log`，于是 `grep -c 某字符串` 会统计到自己，得到假阳性。
+
+    落盘文件不受以上任何一条影响，是"是否被调用"唯一可信的证据源。
+
+    Args:
+        tag: 事件标记，如 `ENTRY` / `HOOK`。
+        umo: 会话标识。
+        extra: 附加信息（单行）。
+    """
+    if not _flag("trace_enabled", False):
+        return
+    try:
+        path = _plugin_data_dir() / "trace.log"
+        # 单文件封顶，避免长期开启把磁盘写满
+        if path.exists() and path.stat().st_size > 512 * 1024:
+            path.replace(path.with_suffix(".log.1"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(f"{stamp} {tag} umo={umo} {extra}\n")
+    except Exception:  # noqa: BLE001 - 取证绝不影响主流程
+        pass
 
 
 def _batch_key(event: Any, message: str) -> str | None:
@@ -441,6 +499,23 @@ def _batch_key(event: Any, message: str) -> str | None:
         if msg_id or stamp:
             return f"{msg_id}|{stamp}|{message[:60]}"
     return None
+
+
+def _record_hook_detection(state: Any, text_key: str, now: float) -> None:
+    """把"钩子路刚判过这句话"记进会话状态。
+
+    这是一个**诊断用记录**，不是事件路的闸门：事件路带平台消息 ID，是权威的消息
+    身份，用户重发同一句话必须算新一轮，所以不能拿文本来拦它（见 `_detect` 里的
+    说明，以及 `tests/run_tests.py` 的 `[7]` 用例）。留这份记录是为了在排障时
+    一眼看出"钩子路最近判过什么"，配合 log 判断两路是否都在工作。
+
+    Args:
+        state: 会话状态。
+        text_key: 归一化文本键（`umo|text:...`）。
+        now: 当前时间戳。
+    """
+    fingerprint = text_key.rsplit("text:", 1)[-1]
+    state.last_detected_hook = f"{now:.3f}:{fingerprint}"
 
 
 def _state(ctx: Context | None, umo: str, conv_id: str) -> Any:
@@ -737,6 +812,7 @@ async def _detect(
     message: str,
     *,
     umo: str = "",
+    via_hook: bool = False,
 ) -> Any:
     """对一个用户消息做话题判定并推进状态。
 
@@ -747,6 +823,9 @@ async def _detect(
         event: 消息事件（请求钩子那条路拿不到，传 None）。
         message: 用户消息正文。
         umo: 会话标识；钩子路径下事件缺失，需要调用方显式给。
+        via_hook: 是否由请求钩子路调用。为 True 时会把这条消息的指纹落到
+            `TopicState.last_detected_hook`（持久化），用于排障与状态核对，
+            见 `_record_hook_detection`。
 
     Returns:
         最终 Verdict；未执行判定时返回 None。
@@ -763,10 +842,15 @@ async def _detect(
         logger.info(f"[{PLUGIN_NAME}] 本会话已被 /topicweave off 关闭，跳过判定")
         return None
 
-    # 去重（两条路都可能到，见 DETECT_DEDUP_WINDOW / HOOK_DEDUP_WINDOW 的说明）：
+    # 去重（两条路都可能到，见 DETECT_DEDUP_WINDOW / HOOK_DEDUP_WINDOW /
+    # CROSS_PATH_DEDUP_WINDOW 的说明）：
     #   · 有事件对象（消息事件那条路）→ 按消息 ID + 时间戳去重，用户重发同一句话算新一轮；
     #   · 没有事件对象（请求钩子那条路）→ 只能按文本去重，并且只跳过"事件路刚判过的"
     #     文本，避免同一条消息被判定两次。
+    #
+    # **不要给事件路加"按文本跳过"的规则**：事件路带平台消息 ID，是权威的消息身份；
+    # 用户完全可能把同一句话重发一遍，那是真实的新一轮。按文本拦会把这一轮吞掉
+    # （tests/run_tests.py 的 `[7]` 用例就是为此存在的）。
     now = time.time()
     for stale_key in [
         k for k, ts in RUNTIME.last_detect.items() if now - ts > DETECT_DEDUP_WINDOW
@@ -825,6 +909,22 @@ async def _detect(
 
     verdict = _apply_threshold(verdict)
     _log_verdict(umo, message, verdict, state)
+    _trace(
+        "VERDICT",
+        umo,
+        f"| {'NEW-TOPIC' if verdict.is_new_topic else 'CONTINUE'} "
+        f"| via={'hook' if via_hook else 'event'} "
+        f"| confidence={verdict.confidence:.2f} | source={verdict.source} "
+        f"| turns={state.turns + 1} | msg={message[:60]!r}",
+    )
+
+    # 钩子路：把指纹持久化，方便排障与状态核对（事件路的去重不依赖它，见上面的说明）。
+    # 这一步必须独立落盘：`CONTINUE`（延续）判定下面不会触发状态变更，若只靠函数
+    # 末尾那次 `maybe_save()`，标记就写不进磁盘。
+    if via_hook:
+        _record_hook_detection(state, text_key, now)
+        _store().mark_dirty()
+        _store().maybe_save()
 
     # 状态推进：无论判定结果如何，这条消息都成为「上文」
     recent = _recent_for(umo)
@@ -1084,6 +1184,14 @@ async def handle_message_v017(*args: Any, **kwargs: Any):
     """
     event, _req = _extract(*args, **kwargs)
     message = (getattr(event, "message_str", "") or "").strip()
+    msg_obj = getattr(event, "message_obj", None)
+    _trace(
+        "ENTRY",
+        str(getattr(event, "unified_msg_origin", "-")),
+        f"| v={PLUGIN_VERSION} | msg={message[:60]!r} "
+        f"| msg_id={getattr(msg_obj, 'message_id', '')!r} "
+        f"| stopped={getattr(event, '_force_stopped', '?')}",
+    )
     stopped = "?"
     try:
         stopped = str(event.is_stopped())
@@ -1113,18 +1221,24 @@ async def handle_message_v017(*args: Any, **kwargs: Any):
 async def hook_llm_request_v017(*args: Any, **kwargs: Any) -> None:
     """请求钩子：**判定主场之一** + `hint` / `auto` 的请求改写。
 
-    为什么判定要放在这里（v0.8.0 的架构性修复）：
+    为什么判定要放在这里：
 
     消息事件处理器排在一个**按优先级降序执行、遇到 `event.is_stopped()` 就 break**
-    的循环里。装了"消息防抖动 / 连续消息合并"这类插件时，它们会用更高优先级
-    （例如 50）先跑，并调用 `event._force_stopped = True` 静默事件——于是排在后面的
-    消息处理器**一次都不会执行**（实测：`handle_message_v017` 调用次数 0，而本钩子
-    照常触发 4 次）。本钩子**不在那个循环里**，不受优先级与事件静默影响。
+    的循环里。只要有**优先级高于本插件**的插件先跑并调用 `event._force_stopped = True`
+    静默事件，排在后面的消息处理器就**一次都不会执行**。本钩子**不在那个循环里**，
+    不受优先级与事件静默影响，所以它是判定可靠性的兜底。
+
+    ⚠️ **不要在这里写"某个具体插件挡住了我们"**：
+    本仓库的 `tests/reproduce_priority_race.py` 在真实 AstrBot 注册表上验证过顺序，
+    `astrbot_plugin_continuous_message`（priority=50）**排在**本插件（priority=60）
+    **之后**，根本没有机会先静默事件。v0.8.0 曾把"入口零调用"归因于它，那个归因是
+    **错的**。真实成因见 `MESSAGE_PRIORITY` 的注释：只有优先级 > 60 的插件才挡得住。
 
     所以现在的策略是"两条路都要"：
     - 消息事件那条路（快、有事件对象）正常时先到；
-    - 本钩子在事件被静默时代跑判定，用自己的去重表与前者互斥。
-    另外消息事件也提高了优先级（见 `MESSAGE_PRIORITY`），双保险。
+    - 本钩子在事件被静默时代跑判定。
+    两路互斥靠 `_detect` 里的去重（见 `CROSS_PATH_DEDUP_WINDOW` 的说明），
+    注意事件路不按文本拦，用户重发同一句话必须算新一轮。
 
     Args:
         *args: 派发方给的位置参数（实机上只有 `ProviderRequest`）。
@@ -1132,6 +1246,13 @@ async def hook_llm_request_v017(*args: Any, **kwargs: Any) -> None:
     """
     event, req = _extract(*args, **kwargs)
     event_umo = _umo(event) if event is not None else ""
+    _trace(
+        "HOOK",
+        event_umo or "-",
+        f"| v={PLUGIN_VERSION} | has_event={event is not None} "
+        f"| has_request={req is not None} "
+        f"| prompt_len={len(getattr(req, 'prompt', '') or '') if req is not None else 0}",
+    )
     logger.info(
         f"[{PLUGIN_NAME}] hook_llm_request_v017 被调用 | {PLUGIN_VERSION} "
         f"| has_event={event is not None} | has_request={req is not None} "
@@ -1147,7 +1268,7 @@ async def hook_llm_request_v017(*args: Any, **kwargs: Any) -> None:
         if message:
             umo = event_umo or _umo_from_request(req)
             try:
-                await _detect(ctx, event, message, umo=umo)
+                await _detect(ctx, event, message, umo=umo, via_hook=True)
             except Exception as exc:  # noqa: BLE001 - 判定失败绝不影响正常回复
                 logger.warning(
                     f"[{PLUGIN_NAME}] 钩子内判定异常（已兜住）：{type(exc).__name__}: {exc}"

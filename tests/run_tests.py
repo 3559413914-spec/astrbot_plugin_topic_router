@@ -344,6 +344,9 @@ def make_plugin(module, context: FakeContext, config: dict):
 
 MODULE = None
 
+# 在模块级导入一次：多个用例都要用它构造请求对象，局部重复导入会让新用例漏掉
+from astrbot.api.provider import ProviderRequest  # noqa: E402
+
 
 def state_store():
     """取当前模块级话题状态存储。
@@ -1265,6 +1268,100 @@ async def test_handlers_are_module_level(module) -> None:
             check(f"handle_message_v017 {label} 不抛异常", False, f"{type(exc).__name__}: {exc}")
 
 
+async def test_cross_path_dedup(module) -> None:
+    """跨路去重：同一条消息不能被判两次，但用户重发必须算新一轮。
+
+    修复前的缺陷：钩子路拿不到事件对象，`_batch_key()` 必然返回 None，所以它无法写
+    `state.last_detected`，判完只写内存里的 `RUNTIME.last_detect`。于是"钩子先判、
+    事件路后到"时事件路认不出来，同一条消息被判两次，`turns` 直接 +2。
+
+    修复后钩子路会把指纹落到 `state.last_detected_hook`（持久化、可诊断）。但**事件路
+    不按文本拦**：它带平台消息 ID，是权威的消息身份，用户重发同一句话必须算新一轮
+    —— 这一条曾经被第一版修复误伤，`[7]` 用例当场抓出来了，所以这里两个方向都要钉住。
+
+    Args:
+        module: 插件模块。
+    """
+    print("\n[17] 跨路去重：不重复判定，但重发算新一轮")
+
+    # --- 方向一：事件路自己重复到达（同一消息 ID）→ 只算一轮
+    fresh_data_root("cross-path-event-repeat")
+    make_plugin(module, FakeContext(), {"mode": "mark"})
+    umo = "aiocqhttp:FriendMessage:crosspath"
+    event = FakeEvent("帮我看下硬盘坏了没", umo, message_id="m100", timestamp=100)
+    async for _ in MODULE.handle_message_v017(event):
+        pass
+    turns_a = state_store().get(umo).turns
+    async for _ in MODULE.handle_message_v017(event):
+        pass
+    turns_b = state_store().get(umo).turns
+    check("同一消息 ID 重复到达只算一轮", turns_a == 1 and turns_b == 1, f"{turns_a} -> {turns_b}")
+
+    # --- 方向二：事件路先判、钩子后到 → 钩子不重复判
+    req = ProviderRequest(
+        prompt=f"当前话题：x\n用户最新消息：{event.message_str}\n请输出判定 JSON。"
+    )
+    await MODULE.hook_llm_request_v017(event, req)
+    check("事件路刚判过，钩子不重复判", state_store().get(umo).turns == 1,
+          f"turns={state_store().get(umo).turns}")
+
+    # --- 方向三：用户重发同一句话（新的消息 ID）→ 必须算新一轮
+    resent = FakeEvent("帮我看下硬盘坏了没", umo, message_id="m101", timestamp=101)
+    async for _ in MODULE.handle_message_v017(resent):
+        pass
+    check(
+        "用户重发同一句话算新一轮（不能被文本去重吞掉）",
+        state_store().get(umo).turns == 2,
+        f"turns={state_store().get(umo).turns}",
+    )
+
+    # --- 方向四：钩子路判过的消息，在状态里留下可诊断的指纹
+    fresh_data_root("cross-path-hook-marker")
+    make_plugin(module, FakeContext(), {"mode": "mark"})
+    umo2 = "aiocqhttp:FriendMessage:crosspath2"
+    event2 = FakeEvent("帮我写个爬虫抓豆瓣", umo2, message_id="m200", timestamp=200)
+    await MODULE.hook_llm_request_v017(
+        event2,
+        ProviderRequest(prompt=f"用户最新消息：{event2.message_str}\n请输出判定 JSON。"),
+    )
+    marker = state_store().get(umo2).last_detected_hook
+    check("钩子路判过之后留下了 last_detected_hook 指纹", bool(marker), repr(marker))
+    check(
+        "指纹里带着归一化文本（排障时能看出判的是哪句话）",
+        "爬虫" in marker,
+        repr(marker),
+    )
+
+
+async def test_trace_landing(module) -> None:
+    """落盘取证：开启 trace_enabled 后，入口/钩子/判定都要在 trace.log 留痕。
+
+    Args:
+        module: 插件模块。
+    """
+    print("\n[18] 排障证据落盘（不依赖日志级别与格式）")
+    root = fresh_data_root("trace")
+    make_plugin(module, FakeContext(), {"mode": "mark", "trace_enabled": True})
+    umo = "aiocqhttp:FriendMessage:trace"
+    event = FakeEvent("帮我看下硬盘坏了没", umo, message_id="m400", timestamp=400)
+    async for _ in MODULE.handle_message_v017(event):
+        pass
+    trace_path = root / "plugin_data" / "astrbot_plugin_topic_router_pro" / "trace.log"
+    check("trace.log 已生成", trace_path.exists(), str(trace_path))
+    body = trace_path.read_text(encoding="utf-8") if trace_path.exists() else ""
+    check("留了 ENTRY 行（证明入口被执行）", "ENTRY" in body, body[:200])
+    check("留了 VERDICT 行（带 via= 标明走的哪条路）", "VERDICT" in body and "via=event" in body, body[:300])
+
+    # 关掉开关就不该有任何落盘
+    root2 = fresh_data_root("trace-off")
+    make_plugin(module, FakeContext(), {"mode": "mark", "trace_enabled": False})
+    event2 = FakeEvent("关掉开关的消息", "aiocqhttp:FriendMessage:notrace", message_id="m401", timestamp=401)
+    async for _ in MODULE.handle_message_v017(event2):
+        pass
+    off_path = root2 / "plugin_data" / "astrbot_plugin_topic_router_pro" / "trace.log"
+    check("关闭 trace_enabled 后不产生 trace.log", not off_path.exists(), str(off_path))
+
+
 async def main() -> int:
     """跑完所有用例。
 
@@ -1293,6 +1390,8 @@ async def main() -> int:
         await test_handlers_are_module_level(plugin_main)
         await test_user_prompt_contains_reply(plugin_main)
         await test_provider_id_fallback(plugin_main)
+        await test_cross_path_dedup(plugin_main)
+        await test_trace_landing(plugin_main)
     except Exception:  # noqa: BLE001
         traceback.print_exc()
         FAILED.append("测试脚本本身抛异常")

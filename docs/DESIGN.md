@@ -237,11 +237,19 @@ for handler in activated_handlers:
 
 而注册表按优先级降序排序、**未声明优先级时默认 0**（`core/star/star_handler.py`）。
 
-装了「消息防抖动 / 连续消息合并」这类插件时，它们用 `priority=50` 先跑，并在每条私聊消息上
-把事件静默掉（`event._force_stopped = True`）——**默认优先级 0 的插件永远轮不到**。
+只要有**优先级高于本插件**的插件先跑并把事件静默掉（`event._force_stopped = True`），
+排在后面的处理器就**一次都不会执行**。
 
-> 这是 v0.1.0 起就存在的缺陷，实测表现：`hook_llm_request_v017` 触发 4 次、
-> `handle_message_v017` 触发 **0 次**、`topic_state.json` 始终不存在。详见 [5.1](#51-消息入口被别的插件静默严重)。
+> ⚠️ **v0.8.2 更正**：v0.8.0 曾把这件事归因于「消息防抖动插件（`priority=50`）先跑」。
+> 那个归因**是错的**——`tests/reproduce_priority_race.py` 在真实注册表上验证过顺序，
+> priority=50 的插件排在 priority=60 的本插件**之后**，没有机会先静默事件。
+>
+> 教训：只读取注册表里的 `priority` 字段值（旧版 §3.3 那种"隔离复现"）**验证不了真实
+> 派发循环里的相对顺序**，必须把真实的 `StarRequestSubStage.process` 跑起来才算数。
+>
+> 因此优先级 60 只保证"比 50 高"，**不保证比所有插件都高**。真实环境若仍有入口零调用，
+> 优先怀疑存在优先级 > 60 的第三方插件。实测表现：`hook_llm_request_v017` 触发 4 次、
+> `handle_message_v017` 触发 **0 次**、`topic_state.json` 始终不存在。
 
 ### 4.2 两条路的分工
 
@@ -269,6 +277,14 @@ tail = prompt.rsplit(marker, 1)[-1] if marker in prompt else ""
 | --- | --- | --- | --- |
 | 消息事件 | `消息ID\|时间戳`（存在 `state.last_detected`） | 永久（按会话） | 用户**重发同一句话**是新的消息 ID，必须算新一轮 |
 | 请求钩子 | 文本归一化后前 120 字（存在 `RUNTIME.last_detect`） | **10 秒** | 只有钩子拿不到消息 ID；窗口短是为了不吞掉用户重发 |
+
+钩子路还会把指纹落到 `TopicState.last_detected_hook`（**持久化**，v0.8.2 新增）。
+修复前它判完只写内存里的 `RUNTIME.last_detect`，于是"钩子先判、事件路后到"时事件路
+认不出来，同一条消息被判两次（`turns` +2）。
+
+> ⚠️ **事件路绝不按文本拦**：它带平台消息 ID，是权威的消息身份，用户重发同一句话必须
+> 算新一轮。v0.8.2 的第一版实现拿钩子指纹去拦事件路，把重发也吞掉了，被
+> `tests/run_tests.py` 的 `[7]` 用例当场抓住。文本级跳过只对钩子路有意义。
 
 > 第一版实现我用了"纯文本"当**两路共用**的键，结果**用户重发同一句话被误判成重复**——
 > 被测试用例 `[7] 用户重发同样的话算新一轮` 当场抓出。这是个好例子：**去重键必须包含能
@@ -318,10 +334,15 @@ tail = prompt.rsplit(marker, 1)[-1] if marker in prompt else ""
 
 **修法**（v0.8.0，双保险）：
 
-1. 消息入口与命令声明 `priority=60`（实测高于防抖插件的 50）。该处理器只判定与记录、
+1. 消息入口与命令声明 `priority=60`（高于 `astrbot_plugin_continuous_message` 的 50，
+   见 `tests/reproduce_priority_race.py` 的顺序验证）。该处理器只判定与记录、
    不 `stop_event`、不发消息，提前执行不干扰别人的合并逻辑；
 2. **判定迁移到请求钩子**——它不在处理器循环内，从机制上摆脱优先级比较。这一条更重要：
    优先级是相对值，今天高于 50、明天可能出现 100。
+
+> **v0.8.2 更正**：上面第 1 条描述的"防抖插件先跑"并不成立（它排在 60 之后）。
+> 但第 2 条的价值反而被这次排查**加强**了——真正能挡住入口的是优先级 > 60 的插件，
+> 而**任何**优先级都无法提供绝对保证，只有"不在循环里"的钩子路径能。
 
 ### 5.2 异常会连累同一条消息上的其它插件
 
@@ -489,6 +510,7 @@ def _extract(*args, **kwargs) -> tuple[Any, Any]:
 | `max_checks_per_hour` | 30 | 话痨群控成本 |
 | `new_conversation_notice` | true | `auto` 切换时是否提示 |
 | `debug_log` | true | 排错时必须开 |
+| `trace_enabled` | false | 要判断"入口到底有没有被派发"时打开（落盘取证，见 [8.0](#80-为什么需要-reproduce_priority_racepy)）|
 
 **关于 `provider_id` 的教训**：默认值曾经硬写 `deepseek/deepseek-v4-flash`，而这是个**不保证
 存在**的 ID，等于默认就配错。教训是：**插件的默认值不应该假设用户环境里有某个具体资源**。
@@ -497,16 +519,35 @@ def _extract(*args, **kwargs) -> tuple[Any, Any]:
 
 ## 8. 测试与评测体系
 
-四套离线测试 + 一个评测台，共 **186 项断言**（140 + 16 + 9 + 21），全部不需要启动 AstrBot
-（第一套除外，它要 import 真实的 AstrBot API 对象）。
+五套离线测试 + 一个评测台，共 **209 项断言**（150 + 16 + 9 + 21 + 13），全部不需要启动 AstrBot
+（第一、三、四、五套要 import 真实的 AstrBot 代码）。
 
 | 套件 | 项数 | 验证什么 | 需要 AstrBot 吗 |
 | --- | --- | --- | --- |
-| `tests/run_tests.py` | 140 | 插件逻辑、判定、状态、指令、边界 | 需要（解释器） |
+| `tests/run_tests.py` | 150 | 插件逻辑、判定、状态、指令、跨路去重、落盘取证、边界 | 需要（解释器） |
 | `tests/test_portability.py` | 16 | 7 种 handler 调用形态（用桩模块） | 不需要 |
 | `tests/reproduce_hook_dispatch.py` | 9 | 注册表"同名复用"行为复现 | 需要 |
 | `tests/verify_zip_install.py` | 21 | zip 安装流程（用上游真实代码） | 需要上游源码 |
+| `tests/reproduce_priority_race.py` | 13 | **真实注册表 + 真实派发循环**里的优先级竞争 | 需要 |
 | `tests/eval_topic_detection.py` | — | **真实数据评测台** | 不需要 |
+
+### 8.0 为什么需要 `reproduce_priority_race.py`
+
+前两套与"是否被调用"有关的测试都有盲区：
+
+- `reproduce_hook_dispatch.py` 只验证"注册键按名字复用"；
+- `run_tests.py` 的 `[7]` 用例是**直接调用** handler，绕过了派发循环。
+
+于是"消息入口在真机上一次都没执行"这件事，在离线环境里**从来没有被真正复现或反驳过**——
+这正是 v0.8.0 的错误根因能存活至今的原因。本套件补上这一环，用真实的
+`StarRequestSubStage.process` + 真实的 `star_handlers_registry` 跑：
+
+1. 注册表里各 handler 的 `priority` / `event_type` / `event_filters`；
+2. 真实派发顺序（证明 priority 60 排在 50 之前）；
+3. 事件被静默后循环 break、入口拿不到机会；
+4. **同一事件下 `on_llm_request` 照常触发** —— 复现"只有钩子日志、没有入口日志"的形态；
+5. 反向验证：**priority 70 才能挡住入口**（60 不是万能）；
+6. `plugin.activated` 过滤路径（另一条被忽略的静默成因）。
 
 ### 8.1 真实数据评测台
 
@@ -558,10 +599,16 @@ for label, call_args in (
 2. 搜 `handle_message_v017 被调用` → **没有**说明入口没执行（当时被误当成"代码坏了"）；
 3. 检查 `topic_state.json` 是否存在 → 不存在说明判定流程从未进入；
 4. 隔离复现：用宿主解释器单独 import 插件模块，打印注册表内容 → 确认 handler 全部注册成功；
-5. **查注册表里其它插件的优先级** → 发现防抖插件 priority=50 且会静默事件。
+5. **把真实派发循环跑起来**，查 `activated_handlers` 的实际顺序 → 别只看 `priority` 字段值，
+   字段值相同/更大 ≠ 实际先执行；
+6. **开启 `trace_enabled` 落盘取证** → 日志有级别限制、格式差异、还会把你自己敲的命令
+   记进去造成假阳性，而落盘不受这些影响。
 
 **结论**：代码没问题，是**执行顺序**问题。教训：**"插件加载成功"与"插件被执行"是两件事**，
 日志里有活动记录也不能证明业务逻辑跑过。
+
+> **v0.8.2 更正**：旧版这里写的"发现防抖插件 priority=50 且会静默事件"是**误判**——
+> 那个插件实际排在本插件之后。真正的做法是第 5、6 步：跑真实循环 + 落盘取证。
 
 ### 9.2 "改了代码但行为没变"
 

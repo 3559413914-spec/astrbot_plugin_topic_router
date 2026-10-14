@@ -44,6 +44,18 @@ class TopicState:
     对象上的临时标记去重并不可靠；把"已经判过哪句话"落到状态里，重复到达时直接
     跳过，`turns` 与话题状态才不会被推快一倍。
     """
+    last_detected_hook: str = ""
+    """上一条由**请求钩子路**判定过的消息指纹（归一化文本，带时间戳）。
+
+    钩子路拿不到事件对象，算不出 `last_detected` 那套「消息 ID + 时间戳」键，
+    所以修复前它判完只写内存里的去重表 —— 一旦"钩子先判、事件路后到"，事件路
+    认不出来，同一条消息会被判两次（`turns` +2）。
+
+    格式：`<unix 时间戳>:<归一化文本前 120 字>`。
+
+    ⚠️ 这是**诊断记录，不是事件路的闸门**：事件路带平台消息 ID，是权威的消息身份，
+    用户重发同一句话必须算新一轮，绝不能拿文本来拦它（见 `docs/DESIGN.md` 4.3）。
+    """
     last_ts: float = 0.0
     """上一条用户消息的时间戳（秒）。"""
     turns: int = 0
@@ -158,6 +170,7 @@ class TopicStore:
                     st.turns,
                     st.switches,
                     st.last_detected,
+                    st.last_detected_hook,
                     round(st.last_ts, 3),
                     len(st.last_user_text),
                     len(st.last_assistant_text),
@@ -212,6 +225,7 @@ class TopicStore:
         state.last_user_text = ""
         state.last_assistant_text = ""
         state.last_detected = ""
+        state.last_detected_hook = ""
         state.last_ts = 0.0
         state.turns = 0
         # conv_id 由调用方立刻填成新对话 ID，这里先清空避免中间态被当成"绑定旧对话"
