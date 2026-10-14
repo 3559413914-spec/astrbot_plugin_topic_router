@@ -67,7 +67,7 @@ AstrBot 的处理器循环遇到 `event.is_stopped()` 就会 `break`。只要有
 > 排除掉第三方插件（最高才 `priority=50`）后，唯一能挡住入口的是**框架内置**的
 > `handle_session_control_agent`——它挂在 `sys.maxsize`（`builtin_stars/astrbot/main.py:44`），
 > **抬到 60 永远追不上**。所以判定主战场已迁到请求钩子，入口只作可选快通道。
-> 证据链见 [`docs/evidence-entry-never-runs.md`](docs/evidence-entry-never-runs.md)。
+> 证据链见 [docs/evidence-entry-never-runs.md](https://github.com/xun-hen/astrbot_plugin_topic_router/blob/main/docs/evidence-entry-never-runs.md)。
 
 > ⚠️ v0.8.2 更正：旧版这里说「消息防抖动插件（`priority=50`）会挡住我们」是**误判**——
 > `tests/reproduce_priority_race.py` 在真实注册表上验证过，它排在 `priority=60` 的本插件
@@ -636,7 +636,14 @@ Linux 上的 AstrBot 解包后会抛 `FileNotFoundError`；此外它还会把 `t
 | `_conf_schema.json` | WebUI 配置项定义 |
 | `metadata.yaml` | 插件元信息 |
 | `tests/eval_topic_detection.py` | 真实数据评测台（阈值调参用，不进安装包） |
-| `docs/DESIGN.md` | **技术文档**：设计取舍、判定原理、执行架构、六个实机踩坑、测试体系 |
+| `docs/DESIGN.md` | **技术文档（源）**：设计取舍、判定原理、执行架构、七个实机踩坑、测试体系 |
+| `docs/topic-router-pro-technical-doc.docx` | 上面那份的 **Word 版**（从 DESIGN.md 生成，方便分发与打印）|
+| `docs/evidence-entry-never-runs.md` | 「消息入口零执行」的完整证据链（实测数据 + 排除项）|
+
+> 📄 上面三份文档**不在安装包里**（包只含运行所需文件）。要读请在仓库里看：
+> [技术文档](https://github.com/xun-hen/astrbot_plugin_topic_router/blob/main/docs/DESIGN.md) ·
+> [Word 版](https://github.com/xun-hen/astrbot_plugin_topic_router/blob/main/docs/topic-router-pro-technical-doc.docx) ·
+> [证据链](https://github.com/xun-hen/astrbot_plugin_topic_router/blob/main/docs/evidence-entry-never-runs.md)
 
 > **给改代码的人**：这个插件的 handler 是**模块级函数**（不是类方法），状态放在模块级
 > `RUNTIME` / `_CTX` 上，方法体里不允许出现 `self.xxx`。原因写在 `router.py` 文件头——
@@ -646,11 +653,16 @@ Linux 上的 AstrBot 解包后会抛 `FileNotFoundError`；此外它还会把 `t
 
 ## 贡献
 
-改代码前请先读 [CONTRIBUTING.md](CONTRIBUTING.md) 的「改代码前必读」——里面六条约束都是
-线上事故换来的（比如 handler 为什么必须是模块级函数）。
+改代码前请先读 [CONTRIBUTING.md](https://github.com/xun-hen/astrbot_plugin_topic_router/blob/main/CONTRIBUTING.md)
+的「改代码前必读」——里面六条约束都是线上事故换来的（比如 handler 为什么必须是模块级函数）。
+（这份文件不在安装包里，所以这里用仓库绝对链接。）
 
-想理解**为什么这样设计**（而不是只知道规则），看 [docs/DESIGN.md](docs/DESIGN.md)：
-它写清了判定算法、两条执行路径的由来、六个实机踩坑的完整根因，以及测试与评测方法。
+想理解**为什么这样设计**（而不是只知道规则），看
+[技术文档](https://github.com/xun-hen/astrbot_plugin_topic_router/blob/main/docs/DESIGN.md)：
+它写清了判定算法、执行架构的实测由来、七个实机踩坑的完整根因，以及测试与评测方法。
+需要 Word 版就下
+[技术文档 Word 版](https://github.com/xun-hen/astrbot_plugin_topic_router/blob/main/docs/topic-router-pro-technical-doc.docx)
+（由 DESIGN.md 生成，改完 Markdown 用 `python tools/md_to_docx.py docs/DESIGN.md <输出>` 重新生成）。
 
 作者：[@xun-hen](https://github.com/xun-hen)。欢迎提 Issue 和 PR。
 
