@@ -421,6 +421,23 @@ def _mode() -> str:
     return raw if raw in {MODE_OFF, MODE_MARK, MODE_HINT, MODE_AUTO} else MODE_MARK
 
 
+def _debug() -> bool:
+    """是否处于调试模式（空跑 + 详细日志）。
+
+    调试模式的语义只有两条，别再往里加东西：
+
+    1. **不看做什么**：一切会改变上下文的动作（`auto` 切换对话、`hint` 注入提示）
+       一律不执行，只在日志里写「本想做什么」；
+    2. **看得更细**：把启发式得分、去重键、模型原始输出等内部细节落盘。
+
+    判定本身照常执行——不然就没得观察了。
+
+    Returns:
+        是否开启调试模式。
+    """
+    return _flag("debug_mode", False)
+
+
 def _flag(key: str, default: bool) -> bool:
     """读取布尔配置。
 
@@ -964,6 +981,20 @@ async def _detect(
         f"| confidence={verdict.confidence:.2f} | source={verdict.source} "
         f"| turns={state.turns + 1} | msg={message[:60]!r}",
     )
+    if _debug():
+        # 调试模式：把判定内部细节全量落盘。刻意只写 trace.log、不写 info.log——
+        # 逐条判定的原始输出量很大，混进主日志会把正常日志淹掉。
+        _trace(
+            "DEBUG",
+            umo,
+            f"| msg_len={len(message)} | norm={normalize_text(message)[:80]!r} "
+            f"| dedup_key={(event_key or text_key)[:70]!r} "
+            f"| heuristic={result.verdict}/{result.confidence:.3f} "
+            f"| needs_llm={result.needs_llm} | llm_called={llm_verdict is not None} "
+            f"| llm_raw={(llm_verdict.confidence if llm_verdict else '-')} "
+            f"| final={verdict.verdict}/{verdict.confidence:.3f} "
+            f"| reason={verdict.reason[:80]!r}",
+        )
 
     # 钩子路：把指纹持久化，方便排障与状态核对（事件路的去重不依赖它，见上面的说明）。
     # 这一步必须独立落盘：`CONTINUE`（延续）判定下面不会触发状态变更，若只靠函数
@@ -1045,6 +1076,22 @@ async def _act(
         verdict: 最终判定。
     """
     if not verdict.is_new_topic or req is None:
+        return
+
+    # 调试模式：一律空跑。判定已经做完了，这里只报告"本想做什么"就返回，
+    # 绝不碰上下文（不新建对话）也不碰请求（不注入 hint）。
+    if _debug():
+        logger.info(
+            f"[{PLUGIN_NAME}] [调试模式] 空跑，不执行动作 | 本想按 mode={_mode()} 处理"
+            f" | 判定={'NEW-TOPIC' if verdict.is_new_topic else 'CONTINUE'}"
+            f" | 置信度={verdict.confidence:.2f} | 话题={verdict.topic_label or '未命名'}"
+        )
+        _trace(
+            "DRYRUN",
+            umo,
+            f"| mode={_mode()} | would_act=new_topic | confidence={verdict.confidence:.2f}"
+            f" | topic={verdict.topic_label or '-'} | switched=no | hint_injected=no",
+        )
         return
 
     if _mode() == MODE_AUTO:

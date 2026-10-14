@@ -746,7 +746,13 @@ async def test_auto_mode(module) -> None:
     print("\n[5] auto 模式")
     fresh_data_root("auto")
     context = FakeContext()
-    plugin = make_plugin(module, context, {"mode": "auto", "auto_threshold": 0.8})
+    plugin = make_plugin(
+        module,
+        context,
+        # new_conversation_notice 的默认值已改为 false（v0.8.5），
+        # 这个用例专门验证"通知"这条路径，所以显式开启。
+        {"mode": "auto", "auto_threshold": 0.8, "new_conversation_notice": True},
+    )
     event = FakeEvent("帮我写个 Python 脚本")
     from astrbot.api.provider import ProviderRequest
 
@@ -1438,6 +1444,123 @@ async def test_hook_prompt_fallback(module) -> None:
     )
 
 
+async def test_debug_mode(module) -> None:
+    """调试模式：判定照常跑，但**一个副作用都不许有**（空跑）。
+
+    为什么需要它：`auto` 模式会真的新建对话、清空上下文，而判定的准确性尚未在真实
+    会话里标定过。调试模式要能让人在**完全不动真实会话**的前提下观察判定。
+
+    这里同时确认"详细日志"那一半：trace.log 里要出现 DEBUG 行。
+
+    Args:
+        module: 插件模块。
+    """
+    print("\n[21] 调试模式：空跑（不切对话、不注入提示）+ 详细日志")
+    root = fresh_data_root("debug-dryrun")
+    context = FakeContext()
+    # auto 模式 + 通知开启 + 调试模式 → 判定照旧，但什么都不该发生
+    plugin = make_plugin(
+        module,
+        context,
+        {
+            "mode": "auto",
+            "auto_threshold": 0.8,
+            "new_conversation_notice": True,
+            "trace_enabled": True,
+            "debug_mode": True,
+        },
+    )
+    event = FakeEvent("帮我写个 Python 脚本")
+    from astrbot.api.provider import ProviderRequest  # noqa: PLC0415
+
+    old = await context.conversation_manager.new_conversation(event.unified_msg_origin)
+    context.calls.clear()
+    new_calls_before = len(context.conversation_manager.new_calls)
+    req = ProviderRequest(
+        prompt=event.message_str,
+        contexts=[{"role": "user", "content": "电路板怎么画"}],
+        conversation=context.conversation_manager.conversations[old],
+    )
+    await run_detect(plugin, event, req)
+
+    check(
+        "调试模式不新建对话",
+        len(context.conversation_manager.new_calls) == new_calls_before,
+        str(context.conversation_manager.new_calls),
+    )
+    check("调试模式不清空上下文", req.contexts != [], str(req.contexts))
+    check("调试模式不向用户发提示", event.sent == [], str(event.sent))
+    check(
+        "调试模式下判定仍然执行（状态被推进）",
+        state_store().get(event.unified_msg_origin).turns == 1,
+        f"turns={state_store().get(event.unified_msg_origin).turns}",
+    )
+
+    trace_path = root / "plugin_data" / "astrbot_plugin_topic_router_pro" / "trace.log"
+    body = trace_path.read_text(encoding="utf-8") if trace_path.exists() else ""
+    check("详细日志：trace.log 里有 DEBUG 行", "DEBUG" in body, body[:200])
+    check(
+        "详细日志：DEBUG 行含启发式得分与模型原始输出字段",
+        "heuristic=" in body and "llm_called=" in body,
+        body[:400],
+    )
+    check("空跑时留下 DRYRUN 记录", "DRYRUN" in body, body[-300:])
+
+    # hint 模式走的是同一个闸门：必须同样被抑制（别只顾着 auto）
+    fresh_data_root("debug-dryrun-hint")
+    context_h = FakeContext()
+    plugin_h = make_plugin(
+        module,
+        context_h,
+        {
+            "mode": "hint",
+            "auto_threshold": 0.8,
+            "trace_enabled": True,
+            "debug_mode": True,
+        },
+    )
+    event_h = FakeEvent("帮我写个 Rust 服务")
+    req_h = ProviderRequest(
+        prompt=event_h.message_str,
+        contexts=[{"role": "user", "content": "电路板怎么画"}],
+    )
+    await run_detect(plugin_h, event_h, req_h)
+    check(
+        "调试模式也不注入 hint（同一个闸门覆盖 auto 与 hint）",
+        len(req_h.extra_user_content_parts) == 0,
+        str(req_h.extra_user_content_parts),
+    )
+
+    # 对照：同样的输入关掉调试模式 → 必须真的切换（证明差别来自调试模式）
+    fresh_data_root("debug-off-control")
+    context2 = FakeContext()
+    plugin2 = make_plugin(
+        module,
+        context2,
+        {
+            "mode": "auto",
+            "auto_threshold": 0.8,
+            "new_conversation_notice": True,
+            "debug_mode": False,
+        },
+    )
+    event2 = FakeEvent("帮我写个 Python 脚本")
+    old2 = await context2.conversation_manager.new_conversation(event2.unified_msg_origin)
+    context2.calls.clear()
+    new_calls_before2 = len(context2.conversation_manager.new_calls)
+    req2 = ProviderRequest(
+        prompt=event2.message_str,
+        contexts=[{"role": "user", "content": "电路板怎么画"}],
+        conversation=context2.conversation_manager.conversations[old2],
+    )
+    await run_detect(plugin2, event2, req2)
+    check(
+        "对照组：关掉调试模式后确实切换了对话（证明差异源自调试模式）",
+        len(context2.conversation_manager.new_calls) == new_calls_before2 + 1,
+        str(context2.conversation_manager.new_calls),
+    )
+
+
 async def test_trace_landing(module) -> None:
     """落盘取证：开启 trace_enabled 后，入口/钩子/判定都要在 trace.log 留痕。
 
@@ -1498,6 +1621,7 @@ async def main() -> int:
         await test_cross_path_dedup(plugin_main)
         await test_hook_with_event(plugin_main)
         await test_hook_prompt_fallback(plugin_main)
+        await test_debug_mode(plugin_main)
         await test_trace_landing(plugin_main)
     except Exception:  # noqa: BLE001
         traceback.print_exc()

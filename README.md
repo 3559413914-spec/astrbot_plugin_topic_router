@@ -111,7 +111,12 @@ AstrBot 的处理器循环遇到 `event.is_stopped()` 就会 `break`。只要有
 | `auto` | 置信度 ≥ `auto_threshold` 时新建一个对话并切过去，旧对话完整留档 | 确认判定准了再开 |
 
 `auto` 做的事和用户手打 `/new` 完全等价：旧对话不删、随时能用 `/ls` `/switch` 切回去，
-区别只是由插件在后台完成，并给群里回一句提示（可用 `new_conversation_notice` 关掉）。
+区别只是由插件在后台完成。**切换默认是静默的**——想让机器人回一句提示，把
+`new_conversation_notice` 打开（默认关闭）。
+
+> 💡 **想先验证判定准不准、又不想动真实会话**：打开 `debug_mode`（调试模式）。
+> 它会进入「空跑」——判定照常执行并记日志，但**一个副作用都不产生**：
+> 即使 `mode=auto` 也不会切对话、不会注入提示。适合在调 `auto_threshold` 之前先观察几天。
 
 **为什么默认不自动切？** 因为误判的代价不对称：
 
@@ -455,6 +460,7 @@ export ASTRBOT_ROOT=/opt/astrbot      # 之后数据都在 /opt/astrbot/data
 | `mode` | `mark` | 先观察。确认判定准确后再考虑 `auto` |
 | `provider_id` | `deepseek/deepseek-v4-flash` | 判定用的模型，格式 `provider_source_id/model`；**填错不影响回复**，只是判定失败 |
 | `debug_log` | 打开 | 不然日志里看不到判定结果 |
+| `debug_mode` | 想验证判定时打开 | 空跑：不切对话、不注入提示，只在日志与 `trace.log` 记录"本想做什么" |
 
 **不知道 `provider_id` 填什么？** 插件每次加载都会把可用的模型 ID 打进日志，抄一个即可：
 
@@ -520,8 +526,9 @@ export ASTRBOT_ROOT=/opt/astrbot      # 之后数据都在 /opt/astrbot/data
 | `short_message_length` | `25` | 不超过这个长度且字面不重叠的消息，交给模型判语义而不是直接判新话题 |
 | `timeout_seconds` | `8` | 判定模型超时，超时按延续处理 |
 | `max_checks_per_hour` | `30` | 每个会话每小时的模型判定上限（0 不限） |
-| `new_conversation_notice` | `true` | `auto` 切换时是否在群里说一句 |
+| `new_conversation_notice` | `false` | `auto` 切换时是否回一句提示。默认关闭（判定质量未标定前不打扰用户）|
 | `debug_log` | `true` | 把判定明细写进日志 |
+| `debug_mode` | `false` | **调试模式：只看不做 + 详细日志**。开启后不切对话、不注入提示，只在日志与 `trace.log` 写「本想做什么」 |
 | `trace_enabled` | `false` | 把入口调用证据落盘到 `trace.log`（排障用，见故障排查表） |
 
 状态文件：`<数据目录>/plugin_data/astrbot_plugin_topic_router_pro/topic_state.json`
