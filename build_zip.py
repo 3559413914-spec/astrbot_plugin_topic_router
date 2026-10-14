@@ -12,7 +12,8 @@ AstrBot 的收尾步骤 `_finalize_extracted_archive` 会在 `os.listdir(插件�
   收尾步骤会把目录往它自己里面搬。
 
 用法：
-    python build_zip.py [输出路径]
+    python build_zip.py                  # 写到插件工作区的 dist/ 目录
+    python build_zip.py <输出路径>        # 写到指定位置
 """
 
 from __future__ import annotations
@@ -57,22 +58,22 @@ def read_version() -> str:
 
 
 def default_output() -> Path:
-    """默认输出路径：桌面。
+    """默认输出路径：插件工作区内的 `dist/`。
 
     走过的坑都记在这，别再踩：
 
-    * 放在 `F:\\deep seek` 根下或插件目录内，zip 会被这个工作区的清理规则扫走
+    * 放在 `F:\\deep seek` 根下或插件目录根下，zip 会被这个工作区的清理规则扫走
       （文件名以 `astrbot_` 开头、或就在插件目录里，实测都会消失）；
-    * 放在插件目录内还会让"重新打包"把上一个包一起压进去。
+    * 放在插件目录根下还会让"重新打包"把上一个包一起压进去。
 
-    桌面在工作区之外，实测能稳定留下。包**内部**的目录名仍然是
-    `astrbot_plugin_topic_router_pro/`，压缩包本身叫什么不影响 AstrBot 识别
-    （它看 metadata.yaml 里的 `name`）。
+    所以固定放 `dist/`：它在 `.gitignore` 里、也被 `tests/run_tests.py` 的
+    `ignore_patterns(..., "dist")` 排除，既不会被清理规则扫走，也不会被打进包里。
+    需要换位置就直接在命令行传输出路径。
 
     Returns:
         输出路径。
     """
-    return Path.home() / "Desktop" / f"astrbot_plugin_topic_router_pro-{read_version()}.zip"
+    return PLUGIN_DIR / "dist" / f"{PACKAGE_NAME}-{read_version()}.zip"
 
 
 def check_version_consistency() -> list[str]:

@@ -176,7 +176,7 @@ zip 从哪来：本仓库**不提供预编译的 zip 附件**（市场装的就�
 ```bash
 git clone https://github.com/xun-hen/astrbot_plugin_topic_router
 cd astrbot_plugin_topic_router_pro
-python build_zip.py            # 在桌面生成 astrbot_plugin_topic_router_pro-<版本>.zip
+python build_zip.py            # 在插件工作区的 dist/ 生成 astrbot_plugin_topic_router_pro-<版本>.zip
 ```
 
 也可以直接下 GitHub 的源码压缩包（Code → Download ZIP）——仓库根目录就是插件目录，
@@ -613,7 +613,7 @@ python tests/verify_zip_install.py
 ### 自己打包
 
 ```bash
-python build_zip.py            # 输出 astrbot_plugin_topic_router_pro-<版本>.zip 到桌面
+python build_zip.py            # 输出 astrbot_plugin_topic_router_pro-<版本>.zip 到插件工作区的 dist/
 ```
 
 **必须用这个脚本，不要用系统右键压缩**：Windows 的压缩工具写反斜杠条目名、且不写目录条目，

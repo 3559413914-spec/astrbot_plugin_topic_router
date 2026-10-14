@@ -48,7 +48,7 @@ python tests/verify_zip_install.py
 ## 自己打包
 
 ```bash
-python build_zip.py     # 输出到桌面
+python build_zip.py     # 输出到插件工作区的 dist/ 目录
 ```
 
 **必须用这个脚本，不要用系统右键压缩**：Windows 的压缩工具写反斜杠条目名、且不写目录条目，

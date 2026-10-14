@@ -655,7 +655,7 @@ for label, call_args in (
 ### 10.2 打包器与三道自检
 
 ```bash
-python build_zip.py     # 输出到桌面
+python build_zip.py     # 输出到插件工作区的 dist/ 目录
 ```
 
 **必须用它，不要用系统压缩工具**（见 [5.7](#57-打包格式附带)）。它包含三道打包前自检，

@@ -50,9 +50,25 @@ def _read_version() -> str:
     return "dev"
 
 
-REAL_ZIP = (
-    Path.home() / "Desktop" / f"astrbot_plugin_topic_router_pro-{_read_version()}.zip"
-)
+def _real_zip() -> Path:
+    """定位真实交付包。
+
+    优先问 `build_zip.default_output()`——打包器把它写哪，这里就查哪，避免两处
+    路径逻辑各写一份、改了打包位置却忘了改测试。打包器不可用时退回 `dist/`。
+
+    Returns:
+        交付包路径。
+    """
+    try:
+        sys.path.insert(0, str(PLUGIN_DIR))
+        import build_zip  # noqa: PLC0415
+
+        return build_zip.default_output()
+    except Exception:  # noqa: BLE001 - 打包器不在就按约定路径找
+        return PLUGIN_DIR / "dist" / f"{PACKAGE_NAME}-{_read_version()}.zip"
+
+
+REAL_ZIP = _real_zip()
 
 # AstrBot v4.28.1 的 zip_updater.py：用来在 POSIX 语义下复现/验证安装流程。
 # 路径可通过环境变量指定；找不到就跳过这一套（不影响其它测试）。
