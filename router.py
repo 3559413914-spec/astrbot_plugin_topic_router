@@ -24,6 +24,30 @@ handler 全部不再执行**——表现就是"插件明明加载了，判定日
    键里不含版本，命中旧条目就直接复用——改名是唯一能让新代码真正生效的办法；
 5. handler 内部**不允许把异常抛出去**：一旦抛出就会 `stop_event()`，连累同一条
    消息上的其它插件（这个坑我们踩过）。所有可能出错的地方自己兜住并记日志。
+
+## v0.8.4 的架构定案：判定主战场是请求钩子，不是消息事件
+
+上面第 9 行那句 `has_event=False` 是 **v0.1.x 的旧观测，已经不成立**。
+v0.8.4 在 AstrBot 4.28.1 实机重新取证（`trace.log` 落盘探针 + 双重标记）：
+
+    ENTRY 行 = 0        # handle_message_v017 一次都没进入函数体
+    HOOK  行 = 7        # 钩子路正常
+    VERDICT 行 = 7      # 判定正常产出，且全部 via=hook，无一条 via=event
+
+即：**消息事件主入口在进入函数体之前就被挡掉了**，而钩子路一直正常。
+`priority=60` 这个 v0.8.0 的修法对它无效——只要挡住我们的执行者优先级更高
+（框架内置 `handle_session_control_agent` 挂在 `sys.maxsize`，
+见 `builtin_stars/astrbot/main.py:44`），60 永远排不上号。
+
+因此约定改为：
+
+6. **判定主战场是 `on_llm_request`**：它不在 `star_request.py` 那个
+   `if event.is_stopped(): break` 循环里，不受任何优先级竞争影响；
+7. 钩子**能拿到事件对象**：`call_event_hook` 是 `await handler.handler(event, *args)`，
+   实机为 `args=['WeixinOCMessageEvent','ProviderRequest']`。所以钩子路要用事件
+   算 `umo` 与去重键，**不要再依赖从 prompt 里抠文本**（那只是老框架的兜底）；
+8. 消息事件入口保留为"可选快通道"，但**不得作为判定的唯一依赖**——
+   实测它可能一条都不执行。
 """
 
 from __future__ import annotations
@@ -135,24 +159,42 @@ CROSS_PATH_DEDUP_WINDOW = 60.0
 # 内置指令（通常很高）。而且本处理器只判定与记录、不 stop_event、不发消息，提前执行
 # 不会干扰别人的合并与静默逻辑。
 #
-# **注意**：60 只保证"比 50 高"，不保证"比所有插件都高"。实机若仍有入口零调用，
-# 优先怀疑存在优先级 > 60 的第三方插件，而不是本插件的注册问题。
+# **注意（v0.8.4 定案）**：60 只保证"比 50 高"，**不保证"比所有执行者都高"**。
+# 实机已确认入口在进入函数体前就被挡掉（`trace.log` 里 ENTRY=0、VERDICT 全部
+# via=hook）。能把入口挡住的只有优先级高于 60 的执行者，而框架内置的
+# `handle_session_control_agent` 挂在 `sys.maxsize`（`builtin_stars/astrbot/main.py:44`，
+# 命中 `USER_SESSIONS` 时 `event.stop_event()`）——**60 永远追不上**。
+#
+# 所以不要再靠抬这个数字去修"入口不执行"：判定主战场已迁到 `on_llm_request`
+# 钩子（见 `hook_llm_request_v017` 的文档串）。这个 60 现在只是"快通道尽量早点跑"。
 MESSAGE_PRIORITY = 60
 
 
-def _extract_user_message(req: Any) -> str:
-    """从 `ProviderRequest` 里取出"用户最新这一条消息"。
+def _hook_user_message(event: Any, req: Any) -> str:
+    """取钩子这一轮要判定的"用户最新消息"。
 
-    请求钩子拿不到事件对象，只能从提示词里抠。判定器自己拼的提示词格式是固定的
-    （见 `detection.build_user_prompt` 的 `用户最新消息：` 行），所以优先按它切；
-    切不到就退回"整段提示词足够短就当作消息"。
+    优先**直接从事件读**（`event.message_str`）——v0.8.4 实测确认钩子能拿到事件对象
+    （`call_event_hook` 是 `await handler.handler(event, *args)`，实机为
+    `args=['WeixinOCMessageEvent','ProviderRequest']`），所以有事件就不该再去猜文本。
+
+    只有拿不到事件（老版本框架）时才退回从 `req.prompt` 里抠——判定器自己拼的提示词
+    格式固定（见 `detection.build_user_prompt` 的 `用户最新消息：` 行），能按标记切；
+    切不到就把"整段提示词足够短就当作消息"。这条兜底路**依赖提示词格式**，
+    任何改写 prompt 的插件都会让它失效，所以只作最后手段。
 
     Args:
+        event: 消息事件（可能为 None）。
         req: `ProviderRequest`。
 
     Returns:
         用户消息正文；取不到时返回空串。
     """
+    text = ""
+    if event is not None:
+        text = (getattr(event, "message_str", "") or "").strip()
+    if text:
+        return text
+
     prompt = getattr(req, "prompt", "") or ""
     if not isinstance(prompt, str):
         return ""
@@ -172,10 +214,10 @@ def _extract_user_message(req: Any) -> str:
 
 
 def _umo_from_request(req: Any) -> str:
-    """尽量从 `ProviderRequest` 推出会话标识。
+    """从 `ProviderRequest` 推出会话标识（**兜底路径**）。
 
-    钩子路径没有事件，只能看 `req.conversation`。取不到就返回空串，由 `_detect`
-    退回按对话 ID（`cid`）隔离——两条路都以 `cid` 为主键，所以不会互相打架。
+    只在钩子拿不到事件对象时才用得到（老版本框架）。有事件时一律用 `_umo(event)`，
+    那才是权威标识。取不到就返回空串，由 `_detect` 退回按对话 ID（`cid`）隔离。
 
     Args:
         req: `ProviderRequest`。
@@ -844,11 +886,16 @@ async def _detect(
 
     # 去重（两条路都可能到，见 DETECT_DEDUP_WINDOW / HOOK_DEDUP_WINDOW /
     # CROSS_PATH_DEDUP_WINDOW 的说明）：
-    #   · 有事件对象（消息事件那条路）→ 按消息 ID + 时间戳去重，用户重发同一句话算新一轮；
-    #   · 没有事件对象（请求钩子那条路）→ 只能按文本去重，并且只跳过"事件路刚判过的"
-    #     文本，避免同一条消息被判定两次。
     #
-    # **不要给事件路加"按文本跳过"的规则**：事件路带平台消息 ID，是权威的消息身份；
+    # v0.8.4 起两路**共用同一把锁**。原因：实测（2026-10-14，AstrBot 4.28.1）表明
+    # 请求钩子**也能拿到事件对象**——`call_event_hook` 是
+    # `await handler.handler(event, *args)`，实机日志为
+    # `args=['WeixinOCMessageEvent', 'ProviderRequest']`、`has_event=True`。
+    # 既然钩子也能算出 `消息ID|时间戳` 这个权威键，就没必要再退化成"按文本猜"：
+    #   · 有事件对象（任一入口）→ 按消息 ID + 时间戳去重，用户重发同一句话算新一轮；
+    #   · 没有事件对象（老版本框架，钩子拿不到事件）→ 退回按文本去重。
+    #
+    # **不要给任何一条路加"按文本拦"的规则**：带上平台消息 ID 时它是权威的消息身份，
     # 用户完全可能把同一句话重发一遍，那是真实的新一轮。按文本拦会把这一轮吞掉
     # （tests/run_tests.py 的 `[7]` 用例就是为此存在的）。
     now = time.time()
@@ -860,11 +907,11 @@ async def _detect(
     event_key = _batch_key(event, message)
     text_key = f"{umo}|text:{normalize_text(message)[:120]}"
     if event_key is None:
-        # 钩子路：事件路刚判过就不重复判
+        # 兜底路：拿不到事件（老框架的钩子，或 _extract 没认出来）→ 只能按文本去重
         seen = RUNTIME.last_detect.get(text_key)
         if seen is not None and now - seen < HOOK_DEDUP_WINDOW:
             logger.debug(
-                f"[{PLUGIN_NAME}] 这段消息刚由消息事件判过，钩子跳过：{message[:30]!r}"
+                f"[{PLUGIN_NAME}] 这段消息刚由另一个入口判过，跳过：{message[:30]!r}"
             )
             return None
     else:
@@ -1219,26 +1266,38 @@ async def handle_message_v017(*args: Any, **kwargs: Any):
 
 @filter.on_llm_request(priority=MESSAGE_PRIORITY)
 async def hook_llm_request_v017(*args: Any, **kwargs: Any) -> None:
-    """请求钩子：**判定主场之一** + `hint` / `auto` 的请求改写。
+    """请求钩子：**判定主战场** + `hint` / `auto` 的请求改写。
 
-    为什么判定要放在这里：
+    ## 为什么判定主战场在这里（v0.8.4 定案，别再改回去）
 
     消息事件处理器排在一个**按优先级降序执行、遇到 `event.is_stopped()` 就 break**
-    的循环里。只要有**优先级高于本插件**的插件先跑并调用 `event._force_stopped = True`
-    静默事件，排在后面的消息处理器就**一次都不会执行**。本钩子**不在那个循环里**，
-    不受优先级与事件静默影响，所以它是判定可靠性的兜底。
+    的循环里。只要有**优先级高于本插件**的执行者先跑并静默事件，排在后面的消息
+    处理器就**一次都不会执行**。实机取证（`trace.log` 落盘探针 + 双重标记）：
+
+        ENTRY 行 = 0     # handle_message_v017 从未进入函数体
+        HOOK  行 = 7     # 本钩子正常
+        VERDICT 行 = 7   # 判定正常，且全部 via=hook，无一条 via=event
+
+    即**主入口在进函数体之前就被挡掉了**，而本钩子一直正常工作。本钩子**不在那个
+    循环里**，不受优先级与事件静默影响——这是它作为主战场的根本理由。
 
     ⚠️ **不要在这里写"某个具体插件挡住了我们"**：
-    本仓库的 `tests/reproduce_priority_race.py` 在真实 AstrBot 注册表上验证过顺序，
-    `astrbot_plugin_continuous_message`（priority=50）**排在**本插件（priority=60）
-    **之后**，根本没有机会先静默事件。v0.8.0 曾把"入口零调用"归因于它，那个归因是
-    **错的**。真实成因见 `MESSAGE_PRIORITY` 的注释：只有优先级 > 60 的插件才挡得住。
+    `tests/reproduce_priority_race.py` 在真实注册表上验证过顺序，
+    `astrbot_plugin_continuous_message`（priority=50）**排在**本插件（60）**之后**，
+    根本没有机会先静默事件。v0.8.0 曾把"入口零调用"归因于它，那个归因是**错的**。
+    能把入口挡住的只有优先级高于 60 的执行者——而框架内置的
+    `handle_session_control_agent` 挂在 `sys.maxsize`（`builtin_stars/astrbot/main.py:44`），
+    **60 永远追不上**。所以"抬优先级"这条路本身就不成立。
 
-    所以现在的策略是"两条路都要"：
-    - 消息事件那条路（快、有事件对象）正常时先到；
-    - 本钩子在事件被静默时代跑判定。
-    两路互斥靠 `_detect` 里的去重（见 `CROSS_PATH_DEDUP_WINDOW` 的说明），
-    注意事件路不按文本拦，用户重发同一句话必须算新一轮。
+    ## 本钩子能拿到事件对象（别再以为拿不到）
+
+    `call_event_hook` 是 `await handler.handler(event, *args)`，实机为
+    `args=['WeixinOCMessageEvent','ProviderRequest']`、`has_event=True`。
+    所以这里优先用事件取消息与 `umo`，只有老框架拿不到事件时才退回从 prompt 抠。
+
+    两路互斥靠 `_detect` 里的去重：带上平台消息 ID 时两路共用同一把锁
+    （见 `CROSS_PATH_DEDUP_WINDOW` 的说明）。注意**任何一条路都不按文本拦**，
+    用户重发同一句话必须算新一轮。
 
     Args:
         *args: 派发方给的位置参数（实机上只有 `ProviderRequest`）。
@@ -1249,7 +1308,8 @@ async def hook_llm_request_v017(*args: Any, **kwargs: Any) -> None:
     _trace(
         "HOOK",
         event_umo or "-",
-        f"| v={PLUGIN_VERSION} | has_event={event is not None} "
+        f"| v={PLUGIN_VERSION} | role=primary "
+        f"| has_event={event is not None} "
         f"| has_request={req is not None} "
         f"| prompt_len={len(getattr(req, 'prompt', '') or '') if req is not None else 0}",
     )
@@ -1262,19 +1322,28 @@ async def hook_llm_request_v017(*args: Any, **kwargs: Any) -> None:
         return
     ctx = _ctx()
 
-    # --- 1) 判定：事件那条路被静默时，由这里兜底 ---
+    # --- 1) 判定：这里是**判定主战场**（v0.8.4 定案） ---
+    # 实测消息事件入口可能一次都不执行（ENTRY=0），所以判定不能押在它身上。
+    # 本钩子不在 `star_request.py` 的 `is_stopped()` break 循环里，不受优先级竞争影响。
     if _flag("detect_in_hook", True):
-        message = _extract_user_message(req)
+        message = _hook_user_message(event, req)
+        # 有事件对象时**以事件为准**：`_umo(event)` 是权威的会话标识，
+        # `_batch_key` 也能算出消息 ID 键，两路因此共用同一把去重锁。
+        # 拿不到事件（老版本框架）才退回从 prompt 抠文本、按文本去重。
+        umo = event_umo or _umo_from_request(req)
         if message:
-            umo = event_umo or _umo_from_request(req)
             try:
                 await _detect(ctx, event, message, umo=umo, via_hook=True)
             except Exception as exc:  # noqa: BLE001 - 判定失败绝不影响正常回复
                 logger.warning(
                     f"[{PLUGIN_NAME}] 钩子内判定异常（已兜住）：{type(exc).__name__}: {exc}"
                 )
+        else:
+            logger.debug(f"[{PLUGIN_NAME}] 钩子里没取到用户消息，跳过本轮判定")
 
-    # --- 2) 请求改写：只对绑定好的会话生效（这里通常拿不到事件） ---
+    # --- 2) 请求改写：执行 `_detect` 挂起的 hint / auto 动作 ---
+    # 这一条**必须有事件对象**（改写要落到具体会话上）；拿不到就跳过，
+    # 等消息事件那条路（如果它还活着）或下一轮处理。
     if event is None:
         return
     try:

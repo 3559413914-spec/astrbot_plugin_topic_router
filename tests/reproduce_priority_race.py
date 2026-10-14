@@ -529,6 +529,60 @@ def main() -> int:
             plugin_md.activated = original
 
 
+    # ------------------------------------------------------------------ 7
+    print("\n[7] 框架内置 handler：priority=sys.maxsize 排在所有插件之前")
+    # 真实来源：astrbot/builtin_stars/astrbot/main.py:44
+    #   @filter.event_message_type(ALL, priority=maxsize)
+    #   async def handle_session_control_agent(self, event): ...
+    #       if session_id in USER_SESSIONS: await SessionWaiter.trigger(...); event.stop_event()
+    # 这是本插件 priority=60 永远追不上的一层：60 < sys.maxsize。
+    builtin = register_competitor(
+        star_handlers_registry, reg, sys.maxsize, "builtin_session_control_maxsize"
+    )
+    ordered_max = list(
+        star_handlers_registry.get_handlers_by_event_type(
+            EventType.AdapterMessageEvent, only_activated=False
+        )
+    )
+    names_max = [h.handler_name for h in ordered_max]
+    print(f"    顺序（前 4 项）: {names_max[:4]}")
+    i_builtin = names_max.index("builtin_session_control_maxsize")
+    i_entry_max = names_max.index("handle_message_v017")
+    check(
+        "内置 maxsize handler 排在入口（60）之前",
+        i_builtin < i_entry_max,
+        f"builtin@{i_builtin} entry@{i_entry_max}",
+    )
+    check(
+        "sys.maxsize 确实大于 MESSAGE_PRIORITY",
+        sys.maxsize > 60,
+        f"maxsize={sys.maxsize}",
+    )
+
+    # 内置 handler 静默事件后，入口一次都拿不到机会
+    hits_max: list[str] = []
+
+    async def counting_entry_max(*args, **kwargs):
+        """计数替身。"""
+        hits_max.append("hit")
+        return
+        yield
+
+    original_max = entry_md.handler
+    entry_md.handler = counting_entry_max
+    event_e = FakeEvent("帮我看下硬盘坏了没")
+    event_e.set_extra("activated_handlers", [builtin, entry_md])
+    event_e.set_extra("handlers_parsed_params", {})
+    try:
+        asyncio.run(run_single(event_e))
+    finally:
+        entry_md.handler = original_max
+    check(
+        "内置 handler 静默事件后入口零执行（抬 priority 到 60 无效）",
+        hits_max == [] and event_e.is_stopped() is True,
+        f"hits={hits_max} stopped={event_e.is_stopped()}",
+    )
+
     print(f"\n通过 {PASSED} 项，失败 {len(FAILED)} 项")
     if FAILED:
         print("失败用例：")

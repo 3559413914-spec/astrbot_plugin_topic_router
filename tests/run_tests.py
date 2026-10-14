@@ -1333,6 +1333,111 @@ async def test_cross_path_dedup(module) -> None:
     )
 
 
+async def test_hook_with_event(module) -> None:
+    """钩子**同时**拿到事件与请求时（AstrBot 4.28.1 的实测形态），判定与去重都要成立。
+
+    为什么单独立一条：`_extract` 按类型认参数，事件 + 请求同时出现时钩子路会变成
+    "有事件对象"，于是 `_batch_key()` 能算出真键、走的是事件路的去重分支。这与
+    "钩子只有 ProviderRequest"（老版本形态）是两条不同的代码路径，必须分别钉住。
+
+    实机证据（用户 v2.0 报告 §8.5）：
+        hook_llm_request_v017 被调用 | has_event=True | has_request=True
+        | args=['WeixinOCMessageEvent', 'ProviderRequest']
+    框架侧对应 `call_event_hook` 的 `await handler.handler(event, *args)`。
+
+    Args:
+        module: 插件模块。
+    """
+    print("\n[19] 钩子同时拿到事件与请求（4.28.1 形态）")
+    fresh_data_root("hook-with-event")
+    context = FakeContext()
+    make_plugin(module, context, {"mode": "mark"})
+    umo = "weixin_personal_pxjc:FriendMessage:hookevent"
+    event = FakeEvent("看看修好了吗", umo, message_id="mwh1", timestamp=900)
+
+    req = ProviderRequest(
+        prompt=f"当前话题：（还没有话题）\n用户最新消息：{event.message_str}\n请输出判定 JSON。"
+    )
+    # 与框架一致：事件在前，请求在后
+    await MODULE.hook_llm_request_v017(event, req)
+    turns = state_store().get(umo).turns
+    check("钩子带事件也能完成判定", turns == 1, f"turns={turns}")
+
+    st = state_store().get(umo)
+    check(
+        "带事件时钩子路也会写 last_detected_hook（排障指纹）",
+        bool(st.last_detected_hook),
+        repr(st.last_detected_hook),
+    )
+
+    # 同一事件再次从钩子到达 → 不该重复判定
+    await MODULE.hook_llm_request_v017(event, ProviderRequest(prompt=req.prompt))
+    check(
+        "同一条消息重复到达钩子不重复判定",
+        state_store().get(umo).turns == 1,
+        f"turns={state_store().get(umo).turns}",
+    )
+
+    # 用户重发同一句话（新消息 ID）→ 必须算新一轮
+    again = FakeEvent("看看修好了吗", umo, message_id="mwh2", timestamp=901)
+    await MODULE.hook_llm_request_v017(again, ProviderRequest(prompt=req.prompt))
+    check(
+        "钩子路下重发同一句话也算新一轮",
+        state_store().get(umo).turns == 2,
+        f"turns={state_store().get(umo).turns}",
+    )
+
+
+async def test_hook_prompt_fallback(module) -> None:
+    """钩子**只拿到 ProviderRequest**（老框架形态）时，仍能从提示词里兜底抠出消息。
+
+    v0.8.4 把钩子改成了判定主战场，并优先从事件读消息（`_hook_user_message`）。
+    但老版本框架的钩子拿不到事件，只能从 prompt 抠——这条路依赖提示词格式，
+    必须单独钉住，否则一旦 `build_user_prompt` 的标记改了，兜底会静默失效。
+
+    Args:
+        module: 插件模块。
+    """
+    print("\n[20] 钩子只有请求、没有事件（老框架兜底路径）")
+    fresh_data_root("hook-prompt-only")
+    make_plugin(module, FakeContext(), {"mode": "mark"})
+    umo = "aiocqhttp:group:promptonly"
+
+    # 不出事件，只给请求：走 _hook_user_message 的 prompt 抠取分支
+    prompt = "当前话题：（还没有话题）\n用户最新消息：帮我看看硬盘挂了没\n请输出判定 JSON。"
+    req = ProviderRequest(prompt=prompt)
+    await MODULE.hook_llm_request_v017(req)
+
+    # 没有事件时 umo 只能从 req.conversation 推，推不到就按 cid 隔离；
+    # 这里只断言"判定确实发生了"，即状态里出现任意一条带轮数的记录
+    store = MODULE.RUNTIME.store
+    states = getattr(store, "_states", {})
+    judged = [s for s in states.values() if s.turns > 0]
+    check(
+        "只有 prompt 时也能完成判定（不再依赖事件对象）",
+        len(judged) == 1,
+        f"states={ {k: v.turns for k, v in states.items()} }",
+    )
+    if judged:
+        check(
+            "抠出来的正是标记后的那句话",
+            "硬盘" in (judged[0].last_user_text or ""),
+            repr(judged[0].last_user_text),
+        )
+
+    # 提示词里没有标记时，退回"整段提示词足够短就当作消息"
+    fresh_data_root("hook-prompt-no-marker")
+    make_plugin(module, FakeContext(), {"mode": "mark"})
+    await MODULE.hook_llm_request_v017(ProviderRequest(prompt="顺便看看代理池"))
+    states2 = getattr(MODULE.RUNTIME.store, "_states", {})
+    judged2 = [s for s in states2.values() if s.turns > 0]
+    check(
+        "没有标记时退回整段提示词",
+        len(judged2) == 1 and "代理池" in (judged2[0].last_user_text or ""),
+        f"{[(k, v.turns, v.last_user_text) for k, v in states2.items()]}",
+    )
+
+
 async def test_trace_landing(module) -> None:
     """落盘取证：开启 trace_enabled 后，入口/钩子/判定都要在 trace.log 留痕。
 
@@ -1391,6 +1496,8 @@ async def main() -> int:
         await test_user_prompt_contains_reply(plugin_main)
         await test_provider_id_fallback(plugin_main)
         await test_cross_path_dedup(plugin_main)
+        await test_hook_with_event(plugin_main)
+        await test_hook_prompt_fallback(plugin_main)
         await test_trace_landing(plugin_main)
     except Exception:  # noqa: BLE001
         traceback.print_exc()

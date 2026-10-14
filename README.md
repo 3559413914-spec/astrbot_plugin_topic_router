@@ -52,21 +52,26 @@ AstrBot 的对话是一整条上下文。当用户在同一个会话里从"帮�
 3. **失败不影响正常聊天**。判定是旁路：超时、异常、JSON 解析失败都退化成「延续」，
    该回的消息照常回。
 
-**判定跑在两条路上**（v0.8.0 起）：
+**判定跑在两条路上，主战场是请求钩子**：
 
-| 路 | 位置 | 特点 |
-| --- | --- | --- |
-| 消息事件 | `handle_message_v017`，`priority=60` | 最快，能拿到事件对象；但**可能被别的插件静默** |
-| 请求钩子 | `hook_llm_request_v017` | 不在插件排队循环里，**不会被任何插件挡住**；只拿得到提示词 |
+| 路 | 位置 | 角色 | 特点 |
+| --- | --- | --- | --- |
+| 消息事件 | `handle_message_v017`，`priority=60` | 可选**快通道** | 最快、最早拿到事件；但**实测可能一次都不执行** |
+| 请求钩子 | `hook_llm_request_v017` | **判定主战场** | 不在插件排队循环里，**不会被任何优先级挡住**；也能拿到事件对象 |
 
 AstrBot 的处理器循环遇到 `event.is_stopped()` 就会 `break`。只要有**优先级高于本插件**的
-插件先跑并静默事件，消息入口就一次都执行不到。
-两条路靠去重互斥，同一条消息只会判定一次。
+执行者先跑并静默事件，消息入口就一次都执行不到。两条路靠去重互斥，同一条消息只判定一次。
+
+> ⚠️ **v0.8.4 实测定案**：本插件的消息入口在真机上**确实一次都没进入函数体**
+> （落盘探针 `trace.log`：`ENTRY` = 0 行，`VERDICT` 7 行且**全部 `via=hook`**）。
+> 排除掉第三方插件（最高才 `priority=50`）后，唯一能挡住入口的是**框架内置**的
+> `handle_session_control_agent`——它挂在 `sys.maxsize`（`builtin_stars/astrbot/main.py:44`），
+> **抬到 60 永远追不上**。所以判定主战场已迁到请求钩子，入口只作可选快通道。
+> 证据链见 [`docs/evidence-entry-never-runs.md`](docs/evidence-entry-never-runs.md)。
 
 > ⚠️ v0.8.2 更正：旧版这里说「消息防抖动插件（`priority=50`）会挡住我们」是**误判**——
 > `tests/reproduce_priority_race.py` 在真实注册表上验证过，它排在 `priority=60` 的本插件
-> **之后**。真正能挡住入口的是优先级 **> 60** 的插件。优先级是相对值，永远不提供绝对保证，
-> 所以判定同时跑在请求钩子上（那条路不在循环里）。
+> **之后**。优先级是相对值，永远不提供绝对保证，所以判定以请求钩子为准（那条路不在循环里）。
 
 判定结果按会话（UMO）隔离保存，`auto` 模式只是替用户执行了一次 `/new`，旧对话完整留档。
 
@@ -547,8 +552,8 @@ export ASTRBOT_ROOT=/opt/astrbot      # 之后数据都在 /opt/astrbot/data
 | --- | --- |
 | 安装时报 `FileNotFoundError: .../plugin/astrbot_plugin_topic_router_pro` | 包是用系统压缩工具打的（反斜杠条目名 / 缺目录条目）。用 `python build_zip.py` 重新打包，或直接用 release 里的包 |
 | 日志里完全没有插件的行 | 插件没装上或被禁用：去 **插件 → 插件** 看列表状态与版本 |
-| 有 `hook_llm_request_v017 被调用`，但搜不到 `handle_message_v017 被调用`，且没有 `topic_state.json` | v0.7.x 的已知缺陷（消息入口被别的插件静默）。升级到 **v0.8.0+** 即可，判定已迁移到请求钩子 |
-| 升级到 v0.8.0+ 后仍只有钩子日志、没有入口日志 | 有优先级 **> 60** 的插件先静默了事件。开启 `trace_enabled` 后看 `trace.log` 里有没有 `ENTRY` 行来定性：<br>· **有 ENTRY、没 VERDICT** → 入口跑了但判定被跳过（多半是去重命中），查 `via=` 与 `turns`；<br>· **连 ENTRY 都没有** → 入口确实没被派发，去插件列表查其它插件的 `priority`，或按 `docs/DESIGN.md` 第 9.1 节的顺序排查。<br>注意：**别用 `grep -c` 数日志**——WebUI 会把你自己敲的命令也记进 `info.log`，统计会把自己数进去 |
+| 有 `hook_llm_request_v017 被调用`，但搜不到 `handle_message_v017 被调用`，且没有 `topic_state.json` | v0.7.x 的已知缺陷（消息入口被静默）。升级到 **v0.8.0+** 即可，判定已迁移到请求钩子 |
+| 升级到 v0.8.0+ 后仍只有钩子日志、没有入口日志 | **v0.8.4 已定案为正常现象**：入口在真机上可能一次都不执行（实测 `trace.log` 里 `ENTRY`=0、`VERDICT` 全部 `via=hook`），判定由请求钩子承担，功能不受影响。要确认请开 `trace_enabled` 看 `trace.log`：<br>· **有 ENTRY** → 入口在跑；<br>· **无 ENTRY、有 HOOK/VERDICT** → 入口被上游静默（预期行为，无需处理）。<br>注意：**别用 `grep -c` 数日志**——WebUI 会把你自己敲的命令也记进 `info.log`，统计会把自己数进去 |
 | 有 `模块已导入` 但没有判定日志 | `mode` 是 `off`、或 `enabled` 是 `false`、或 `debug_log` 关了；也可能是这个会话被 `/topicweave off` 关了 |
 | 判定结果和实际不符，老是判延续 | 看日志里的 `heuristic_confidence`：启发式就判了延续的话，调低 `sim_continue` 或调高 `sim_new_topic` |
 | `[WARN] 判定模型调用失败` | `provider_id` 写错或该 provider 不可用；去日志里抄一个可用的 ID |
@@ -591,7 +596,7 @@ python tests/eval_topic_detection.py --json-out before.json
 五套离线测试，都不需要启动 AstrBot（第一、四、五套需要 AstrBot 的 Python 环境来 import 真实代码）：
 
 ```bash
-# 1) 插件逻辑：150 项（含跨路去重与落盘取证；需要 AstrBot 的 python）
+# 1) 插件逻辑：157 项（含跨路去重、钩子两种形态、落盘取证；需要 AstrBot 的 python）
 python tests/run_tests.py
 
 # 2) 可移植性：16 项（用桩模块，任意 Python 3.10+）
@@ -603,7 +608,7 @@ python tests/eval_topic_detection.py --compare-legacy
 # 4) 注册表复用复现：9 项（验证 AstrBot 的 handler 注册表行为）
 python tests/reproduce_hook_dispatch.py
 
-# 5) 真实派发循环里的优先级竞争：13 项（需要 AstrBot 的 python）
+# 5) 真实派发循环里的优先级竞争：16 项（含 sys.maxsize 内置 handler；需要 AstrBot 的 python）
 python tests/reproduce_priority_race.py
 
 # 6) zip 安装流程：21 项（需要 AstrBot v4.28.1 源码，见脚本内提示）
