@@ -519,7 +519,7 @@ export ASTRBOT_ROOT=/opt/astrbot      # 之后数据都在 /opt/astrbot/data
 | `always_llm` | `false` | 每轮都问模型（贵，一般不用） |
 | `sim_continue` | `0.5` | 相似度高于它就判延续，不问模型 |
 | `sim_new_topic` | `0.12` | 相似度低于它且无承接词就判新话题 |
-| `time_gap_minutes` | `45` | 冷启动间隔，超过它倾向判新话题 |
+| `time_gap_minutes` | `45` | 距上条消息超过它，就**请模型判一次**「这句是不是接着上一件事」。不再凭时间硬判新话题（隔一小时回来继续同一件事很常见）|
 | `min_message_length` | `6` | 短于它的消息（如"嗯""继续"）不判定 |
 | `history_turns` | `3` | 送给判定模型的近期消息条数 |
 | `include_assistant_reply` | `true` | 把机器人上一句回复也给判定模型看（很多换话题发生在回答之后） |
@@ -603,7 +603,7 @@ python tests/eval_topic_detection.py --json-out before.json
 五套离线测试，都不需要启动 AstrBot（第一、四、五套需要 AstrBot 的 Python 环境来 import 真实代码）：
 
 ```bash
-# 1) 插件逻辑：157 项（含跨路去重、钩子两种形态、落盘取证；需要 AstrBot 的 python）
+# 1) 插件逻辑：178 项（含跨路去重、钩子两种形态、调试模式、长空闲、落盘取证；需要 AstrBot 的 python）
 python tests/run_tests.py
 
 # 2) 可移植性：16 项（用桩模块，任意 Python 3.10+）

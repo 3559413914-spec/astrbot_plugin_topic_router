@@ -28,6 +28,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import traceback
 from pathlib import Path
 from types import SimpleNamespace
@@ -476,8 +477,32 @@ async def test_heuristics(module) -> None:
     marked = detection.heuristic("换个话题，帮我看看 NAS 的硬盘", state, now=1002.0)
     check("显式换话题词直接定性", marked.verdict == detection.VERDICT_NEW_TOPIC and not marked.needs_llm)
 
+    # 长时间未回复（v0.8.6 改）：不再凭时间硬判新话题，而是**交给模型判是否延续**。
+    # 时间只是弱证据——"隔一小时回来接着做同一件事"很常见，而把延续判成新话题
+    # 正是误判代价最大的那一类。
     cold = detection.heuristic("今天天气怎么样", state, now=1000.0 + 3600, time_gap_minutes=45)
-    check("冷启动 + 低重叠 = 新话题", cold.verdict == detection.VERDICT_NEW_TOPIC, cold.reason)
+    check(
+        "长时间未回复 → 交模型判，而不是凭时间硬判新话题",
+        cold.needs_llm and cold.verdict == detection.VERDICT_CONTINUE,
+        cold.reason,
+    )
+    check("长时间未回复时把间隔写进 reason（模型需要这个线索）",
+          "60" in cold.reason or "过" in cold.reason, cold.reason)
+
+    # 隔很久但字面高度重叠（接着聊同一件事）→ 不必花模型调用。
+    # 用"与上一条消息完全相同"的文本来保证相似度确定性地达到 1.0，
+    # 不去假设 state 里到底存了哪句话。
+    cold_same = detection.heuristic(
+        state.last_user_text,
+        state,
+        now=1000.0 + 3600,
+        time_gap_minutes=45,
+    )
+    check(
+        "隔很久但高度重叠 → 直接判延续、不花模型调用",
+        (not cold_same.needs_llm) and cold_same.verdict == detection.VERDICT_CONTINUE,
+        cold_same.reason,
+    )
 
     # 真实数据带来的修正：短句 + 字面零重叠，不再单凭字面判新话题
     # （实测样本里这类有 30/65 轮，如「我没有代理啊」「等等吧还没做好」，几乎都是延续）
@@ -1561,6 +1586,125 @@ async def test_debug_mode(module) -> None:
     )
 
 
+async def test_long_idle_gap(module) -> None:
+    """长时间未回复后的处理（v0.8.6）：由模型判"下一句是否延续"。
+
+    设计要点（每一步都有对应断言）：
+
+    1. 时间间隔**不再**直接判新话题（旧行为），而是触发一次模型咨询；
+    2. 模型说延续 → 就延续（这正是用户流程图里"可能性高就连续"那一支）；
+    3. 模型说新话题且很确定 → 才算新话题；
+    4. **模型失败/超时 → 按延续**（本项目的铁律：暂时性故障不该切开用户上下文）；
+    5. 提示词里必须带上"隔了多久"，否则模型手上只有语义相似度，等于白问；
+    6. 兜底抠取（只有 prompt、没有事件）不能被这行说明污染。
+
+    Args:
+        module: 插件模块。
+    """
+    print("\n[22] 长时间未回复：交模型判是否延续")
+    umo = "aiocqhttp:group:idle"
+    long_gap = "今天天气怎么样"
+
+    async def setup(state_turns: int = 3):
+        """建会话并把它推到"已经有话题、且刚过很久"的状态。
+
+        Args:
+            state_turns: 当前轮数。
+
+        Returns:
+            (plugin, context, state)。
+        """
+        fresh_data_root(f"idle-{state_turns}")
+        context = FakeContext()
+        plugin = make_plugin(
+            module, context, {"mode": "mark", "time_gap_minutes": 45}
+        )
+        st = state_store().get(umo)
+        st.label = "Python 批量转表格"
+        st.last_user_text = "帮我写个 Python 脚本，把这一批 csv 批量转成 excel"
+        st.turns = state_turns
+        # 把"上一条消息时间"推到两小时前
+        st.last_ts = time.time() - 2 * 3600
+        return plugin, context, st
+
+    # --- 模型说延续 → 延续 ---
+    plugin, context, st = await setup()
+    context.answer = '{"verdict":"continue","confidence":0.9,"topic_name":"Python 批量转表格"}'
+    # 注意：_detect 是**原地修改** state 对象的，所以不能拿 st.turns 当基线
+    # （它会跟着一起变）。必须取数值快照。
+    turns_before_continue = state_store().get(umo).turns
+    await run_detect(plugin, FakeEvent(long_gap, umo), ProviderRequest(prompt=long_gap))
+    turns_after_continue = state_store().get(umo).turns
+    check(
+        "模型判延续时就是延续（隔得久也不硬切）",
+        turns_after_continue == turns_before_continue + 1,
+        f"turns {turns_before_continue} -> {turns_after_continue}",
+    )
+    check(
+        "模型确实被调用了（说明时间间隔走了'交模型判'这条路）",
+        len(context.calls) > 0,
+        f"calls={len(context.calls)}",
+    )
+
+    # --- 提示词里必须带上间隔 ---
+    prompt_text = ""
+    for call in context.calls:
+        text = str(call)
+        if "距上一条消息" in text:
+            prompt_text = text
+            break
+    check(
+        "送给模型的提示词带上了'距上一条消息已过 N 分钟'",
+        "距上一条消息" in prompt_text,
+        prompt_text[:200],
+    )
+    check(
+        "提示词里说明了'隔得久不代表换话题'",
+        "不代表换话题" in prompt_text,
+        prompt_text[:300],
+    )
+
+    # --- 模型说新话题且确定 → 新话题 ---
+    plugin2, context2, st2 = await setup()
+    context2.answer = '{"verdict":"new_topic","confidence":0.9,"topic_name":"天气"}'
+    before_switches = state_store().get(umo).switches
+    await run_detect(plugin2, FakeEvent(long_gap, umo), ProviderRequest(prompt=long_gap))
+    check(
+        "模型很确定判新话题时才切",
+        state_store().get(umo).switches > before_switches,
+        f"switches {before_switches} -> {state_store().get(umo).switches}",
+    )
+
+    # --- 模型失败 → 按延续（铁律）---
+    plugin3, context3, st3 = await setup()
+    context3.fail = RuntimeError("模拟判定模型超时/报错")
+    turns_before = state_store().get(umo).turns
+    await run_detect(plugin3, FakeEvent(long_gap, umo), ProviderRequest(prompt=long_gap))
+    st_after = state_store().get(umo)
+    check(
+        "模型失败时按延续（暂时性故障不切开上下文）",
+        st_after.turns == turns_before + 1,
+        f"turns {turns_before} -> {st_after.turns}",
+    )
+    check(
+        "模型失败时不新建对话",
+        context3.conversation_manager.new_calls == [],
+        str(context3.conversation_manager.new_calls),
+    )
+
+    # --- 兜底抠取不被空闲说明污染 ---
+    check(
+        "只有 prompt 时抠出的仍是用户消息（不含'距上一条消息'说明）",
+        "距上一条消息" not in (st_after.last_user_text or ""),
+        repr(st_after.last_user_text[:80]),
+    )
+    check(
+        "抠出的就是那句话本身",
+        (st_after.last_user_text or "").strip() == long_gap,
+        repr(st_after.last_user_text),
+    )
+
+
 async def test_trace_landing(module) -> None:
     """落盘取证：开启 trace_enabled 后，入口/钩子/判定都要在 trace.log 留痕。
 
@@ -1622,6 +1766,7 @@ async def main() -> int:
         await test_hook_with_event(plugin_main)
         await test_hook_prompt_fallback(plugin_main)
         await test_debug_mode(plugin_main)
+        await test_long_idle_gap(plugin_main)
         await test_trace_landing(plugin_main)
     except Exception:  # noqa: BLE001
         traceback.print_exc()

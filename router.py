@@ -759,12 +759,19 @@ async def _ask_llm(
     timeout = max(1.0, _num("timeout_seconds", 8.0))
     include_reply = _flag("include_assistant_reply", True)
     last_reply = (getattr(state, "last_assistant_text", "") or "") if include_reply else ""
+    # 把"距上一条消息过了多久"告诉模型。长时间未回复时启发式会判 needs_llm，
+    # 但模型只有拿到这个线索才判得动"下一句是否延续"（见 build_user_prompt 的说明）。
+    idle_minutes = 0.0
+    last_ts = float(getattr(state, "last_ts", 0.0) or 0.0)
+    if last_ts:
+        idle_minutes = max(0.0, (time.time() - last_ts) / 60)
     prompt = build_user_prompt(
         message,
         state,
         _recent_for(_umo(event)),
         int(_num("history_turns", 3, int)),
         last_assistant=last_reply,
+        idle_minutes=idle_minutes,
     )
     try:
         resp = await asyncio.wait_for(

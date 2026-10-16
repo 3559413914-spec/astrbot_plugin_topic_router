@@ -217,7 +217,7 @@ def heuristic(
         now: 当前时间戳，便于测试注入。
         sim_continue: 直接判延续的相似度阈值。
         sim_new_topic: 直接判新话题的相似度阈值。
-        time_gap_minutes: 冷启动时间间隔。
+        time_gap_minutes: 长时间未回复的判定间隔；超过它只触发一次"交模型判"，不直接定性。
         min_message_length: 参与判定的最短长度。
         short_message_length: 多短算"追问短句"（这类消息单凭字面不判新话题）。
 
@@ -242,25 +242,43 @@ def heuristic(
             reason="会话内还没有话题，先给它建一个",
         )
 
-    # ---- 冷启动放在最前面：时间间隔是独立且很强的信号 ----
+    # ---- 长时间未回复：交给模型判"下一句是否延续" ----
     #
-    # 隔了很久再开口（默认 45 分钟），多半是新的一件事。它必须优先于下面所有按字面/长度
-    # 走的分支，否则「今天天气怎么样」这种短消息会白花一次模型调用，而时间信号本已足够；
-    # 也要优先于更下面的"短消息一律按延续"，否则「嗯」隔一小时后仍会被当成延续。
-    if (
-        last_ts
-        and gap_minutes >= time_gap_minutes
-        and compose_similarity(text, state) < sim_continue
-    ):
+    # 为什么**不**在这里凭时间直接判新话题（v0.8.6 改）：
+    # 时间间隔只是"可能是新的一件事"的弱证据。真实场景里大量存在"隔了一小时回来接着
+    # 说同一件事"（"那个 bug 我复现了"）。凭时间硬切，切断的正是用户正在做的事——
+    # 而误判代价是不对称的（把延续判成新话题 = 用户觉得机器人失忆，代价最大）。
+    #
+    # 所以这里只做"触发一次模型咨询"：把「距上一条消息过了多久」明确写进 reason，
+    # 让模型带着这个信息判语义。模型说延续就延续、说新话题就新话题。
+    #
+    # 模型不可用（超时/报错/未配 provider）时的退路：按本项目的铁律**失败即延续**
+    # ——启发式判 CONTINUE，让 combine() 在 llm_verdict 为空时直接采用它。
+    # 理由：模型不可用是**暂时性故障**，为此切开用户上下文，代价比"少切一次"大得多。
+    #
+    # 放在这里（短消息/长度分支之前）是因为时间信号仍然强，值得优先消耗一次模型调用。
+    if last_ts and gap_minutes >= time_gap_minutes:
         sim = compose_similarity(text, state)
+        if sim >= sim_continue:
+            # 隔了很久又接着聊同一件事（字面高度重叠）：无需花模型调用
+            return HeuristicResult(
+                verdict=VERDICT_CONTINUE,
+                confidence=min(0.95, 0.6 + sim / 2),
+                similarity=sim,
+                needs_llm=False,
+                reason=(
+                    f"距上一条消息已过 {gap_minutes:.0f} 分钟（阈值 {time_gap_minutes}），"
+                    f"但与当前话题高度重叠（{sim:.2f}），仍是同一件事"
+                ),
+            )
         return HeuristicResult(
-            verdict=VERDICT_NEW_TOPIC,
-            confidence=0.8,
+            verdict=VERDICT_CONTINUE,
+            confidence=0.5,
             similarity=sim,
-            needs_llm=False,
+            needs_llm=True,
             reason=(
-                f"距上一条消息已过 {gap_minutes:.0f} 分钟（阈值 {time_gap_minutes}），"
-                f"且与当前话题重叠不高（{sim:.2f}）"
+                f"距上一条消息已过 {gap_minutes:.0f} 分钟（阈值 {time_gap_minutes}）："
+                f"时间长只是弱信号，交模型判下一句是否延续"
             ),
         )
 
@@ -378,6 +396,7 @@ def build_user_prompt(
     recent: list[str],
     history_turns: int = 3,
     last_assistant: str = "",
+    idle_minutes: float = 0.0,
 ) -> str:
     """拼出送给判定模型的用户侧内容。
 
@@ -385,12 +404,17 @@ def build_user_prompt(
     （"好的，那再问个别的""等等，还有个事"）。只说"最近几条用户消息"，模型看不到
     上一轮到底答了什么，就没有判断"承接关系"的锚点。
 
+    为什么要带"距上一条消息过了多久"（v0.8.6）：长时间未回复之后不能凭时间硬判新话题，
+    而要请模型判"下一句是否延续"。但**模型必须知道隔了多久**才判得动——否则它手上只有
+    语义相似度这一个信号，等于白问一次。所以把间隔明确写进提示词。
+
     Args:
         message: 用户最新消息。
         state: 当前会话的 TopicState。
         recent: 最近的用户消息（旧到新）。
         history_turns: 最多带上几条历史。
         last_assistant: 机器人上一句回复（可为空）。
+        idle_minutes: 距上一条消息过了多少分钟（<=0 表示不提供这条线索）。
 
     Returns:
         提示词文本。
@@ -409,6 +433,15 @@ def build_user_prompt(
         reply = (getattr(state, "last_assistant_text", "") or "").strip()
     if reply:
         lines.append(f"机器人上一句回复：{reply[:300]}")
+    if idle_minutes and idle_minutes > 0:
+        # ⚠️ 这一行**必须放在 `用户最新消息：` 那一行之前**，且**整行不能出现那个标记**。
+        # 原因：插件侧的兜底抠取（router._hook_user_message）用
+        # `prompt.rsplit("用户最新消息：", 1)[-1]` 取正文——只要标记在说明**之后**，
+        # 抠出来的就正是用户消息，说明不会混进去。
+        lines.append(
+            f"距上一条消息已过 {idle_minutes:.0f} 分钟"
+            "（隔得久不代表换话题：如果这一句是在接着做同一件事，就算隔了很久也判 continue）"
+        )
     lines.append(f"用户最新消息：{message[:800]}")
     lines.append("请输出判定 JSON。")
     return "\n".join(lines)
